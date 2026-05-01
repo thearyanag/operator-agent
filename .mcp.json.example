@@ -1,0 +1,29 @@
+{
+  "settings": {
+    "directTools": true,
+    "disableProxyTool": true,
+    "toolPrefix": "server"
+  },
+  "mcpServers": {
+    "postgres": {
+      "command": "bun",
+      "args": ["run", "index.ts"],
+      "cwd": "./packages/postgres-mcp",
+      "env": {
+        "DATABASE_URL": "${DATABASE_URL}"
+      },
+      "lifecycle": "eager"
+    },
+    "datadog": {
+      "command": "bun",
+      "args": ["run", "index.ts"],
+      "cwd": "./packages/datadog-mcp",
+      "env": {
+        "DD_API_KEY": "${DD_API_KEY}",
+        "DD_APP_KEY": "${DD_APP_KEY}",
+        "DD_SITE": "${DD_SITE}"
+      },
+      "lifecycle": "eager"
+    }
+  }
+}
