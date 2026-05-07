@@ -1,0 +1,28 @@
+services:
+  - type: worker
+    name: operator-agent
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    autoDeployTrigger: off
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: PI_MODEL
+        value: anthropic/claude-sonnet-4-5
+      - key: ENABLE_TELEGRAM_NATIVE_STREAMING
+        value: "true"
+      - key: ENABLE_TELEGRAM_BUSINESS_AUTOMATION
+        value: "true"
+      - key: TELEGRAM_BUSINESS_DRY_RUN
+        value: "false"
+      - key: DATABASE_URL
+        sync: false
+      - key: DD_API_KEY
+        sync: false
+      - key: DD_APP_KEY
+        sync: false
+      - key: DD_SITE
+        value: datadoghq.com
