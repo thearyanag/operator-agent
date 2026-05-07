@@ -1,163 +1,157 @@
 # operator-agent
 
-A self-hosted operator copilot for investigating what happened to a user, an account, or a production issue — from chat.
+`operator-agent` is a self-hosted Telegram copilot for understanding what happened to a user, an account, or a production issue.
 
-Founders, ops teams, support teams, and product teams should not need to open five tools just to answer a routine question. Most of the time, the workflow looks like this:
+Instead of opening the admin dashboard, logs, SQL, deploy history, and a support thread separately, you ask one question in chat. The agent checks the systems you connect, returns a grounded answer, and keeps the investigation in the same conversation.
 
-- open the admin dashboard
-- open logs
-- open SQL
-- check a deploy
-- ask engineering for help
-- lose the thread halfway through
-
-**operator-agent is the alternative.**
-
-Ask a question in chat. The agent checks the systems it has access to, returns a grounded answer, and lets you keep drilling with follow-up questions until you understand what actually happened.
-
-## Who this is for
-
-- founders who want direct visibility into customer issues
-- ops teams investigating account state and user journeys
-- support teams trying to answer harder customer questions
-- product teams diagnosing friction in onboarding, activation, and retention
-
-## What it helps answer
+## What You Ask
 
 - What happened to this user?
 - Where did they get stuck?
 - What errors did they hit?
-- Did the latest deploy affect them?
-- What is the state of this account across systems?
-- Why is this customer having a bad experience right now?
+- Did a deploy or outage affect them?
+- What is this account's current state?
+- Which users were affected by this issue?
+- Can you send me the relevant export or evidence?
 
-## Why this is useful
-
-Dashboards are great when the question is already known.
-
-Operator work is different.
-
-The question is usually ad hoc. The answer usually spans multiple systems. And the first answer usually creates the next question.
-
-That is where `operator-agent` is strongest.
-
-It is built for:
-
-- conversational investigation instead of dashboard hopping
-- read-only access to production context
-- user-level answers instead of only aggregate metrics
-- follow-up questions in the same thread of investigation
-
-This repo is best thought of as an **internal operator copilot**, not a general-purpose chatbot.
-
-## See the workflow
-
-A typical loop looks like this:
+The best use case is follow-up investigation:
 
 > You: What happened to user 12345?
 >
-> Agent: They completed signup, hit an error during onboarding, retried twice, and never finished activation. I found the failure in logs and confirmed the account state in Postgres.
->
-> You: What error did they hit?
->
-> Agent: A 500 from the billing service starting at 14:03 UTC. It affected 11 requests in that window.
+> Agent: They completed signup, hit a billing error during onboarding, retried twice, and never finished activation. I found the failure in Datadog and confirmed the account state in Postgres.
 >
 > You: Did the latest deploy cause it?
 >
-> Agent: Likely yes. The errors begin three minutes after the deploy and cluster around one service. Want me to summarize the affected users?
+> Agent: Likely yes. The first matching error appears three minutes after the deploy and affects the same endpoint. I found 11 similar failures in the last hour.
 
-That is the product: ask what happened, then keep asking why.
+## Who It Is For
 
-## Current capabilities
+- founders who want direct visibility into customer issues
+- support teams answering harder account questions
+- ops teams investigating incidents and user journeys
+- product teams diagnosing onboarding, activation, and retention friction
 
-Today, `operator-agent` supports:
+This is an internal operator copilot, not a public support chatbot or a replacement for every dashboard.
 
-- read-only investigation through Postgres and Datadog
-- persisted per-chat sessions for follow-up questions
-- live progress updates during long investigations
-- Telegram-friendly rich response formatting
-- explicit delivery of exports, images, and other artifacts back into chat
-- audit logging for prompts, failures, and reply delivery
+## What It Does
 
-## Product boundaries
+- answers in Telegram, where the operator is already working
+- keeps per-chat memory so follow-up questions stay in context
+- streams private DM drafts while the answer is forming
+- shows live progress during longer group and Business chats
+- can run from a user's connected Telegram Business / Chat Automation profile
+- sends useful files, screenshots, exports, or other artifacts back to Telegram
+- records audit logs for prompts, failures, and reply delivery
 
-`operator-agent` is a strong fit for:
+## Data Sources
 
-- internal support and ops investigations
-- self-hosted operator workflows
-- teams that want a trusted read-only assistant over production context
-- MCP-connected internal tools and data sources
+The default setup includes read-only connectors for:
 
-It is not currently positioned as:
+- **Postgres** for account, user, and product state
+- **Datadog** for logs and error investigation
 
-- a consumer support bot
-- a public multi-tenant SaaS product
-- a replacement for every dashboard
-- a zero-setup system that automatically understands your business
+You can add more pi/MCP tools over time, but the product works best when the connected tools are scoped to operator-safe investigation.
 
----
+## Telegram Business Automation
 
-## Quick start
+Telegram Business / Chat Automation is enabled by default.
 
-### 1. Install
+Users still control this from Telegram. A user must opt in by connecting the bot from Telegram Settings > Chat Automation, and Telegram decides which chats the bot can access and whether it can reply. The app mirrors the latest connection state for audit/debugging and only replies when Telegram grants `can_reply`.
 
-```bash
-bun install
-```
-
-### 2. Configure environment
+To disable Business automation entirely:
 
 ```bash
-cp .env.example .env
+ENABLE_TELEGRAM_BUSINESS_AUTOMATION=false
 ```
 
-At minimum, set:
-
-- `TELEGRAM_BOT_TOKEN`
-- `ANTHROPIC_API_KEY` unless Anthropic auth is already configured in pi settings
-
-If you want the default investigation sources, also configure:
-
-- `DATABASE_URL`
-- `DD_API_KEY`
-- `DD_APP_KEY`
-- `DD_SITE` optional
-
-### 3. Configure MCP sources
+To limit which connected Telegram users may use Business automation:
 
 ```bash
-cp .mcp.json.example .mcp.json
+TELEGRAM_BUSINESS_ALLOWED_OWNER_IDS=123456789,987654321
 ```
 
-This repo already includes project-local MCP servers for:
-
-- `packages/postgres-mcp`
-- `packages/datadog-mcp`
-
-### 4. Run
-
-```bash
-bun run start
-```
-
-For development:
-
-```bash
-bun run dev
-```
-
-## One-click deploy
+## Deploy
 
 ### Render
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/thearyanag/operator-agent)
 
-The Render button uses `render.yaml` and deploys `operator-agent` as a Docker background worker. It prefills safe defaults and prompts for secrets during the initial Blueprint flow:
+Render deploys `operator-agent` as a background worker. The deploy form asks for secrets and prefills safe defaults.
 
-- required secrets: `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY`
-- prefilled defaults: `PI_MODEL=anthropic/claude-sonnet-4-5`, Telegram native streaming enabled, Telegram Business automation enabled, `DD_SITE=datadoghq.com`
+Required:
 
-For OpenRouter instead of Anthropic, deploy first and then change the service environment:
+- `TELEGRAM_BOT_TOKEN`
+- `ANTHROPIC_API_KEY`
+- `DATABASE_URL`
+- `DD_API_KEY`
+- `DD_APP_KEY`
+
+Prefilled:
+
+- `PI_MODEL=anthropic/claude-sonnet-4-5`
+- `ENABLE_TELEGRAM_NATIVE_STREAMING=true`
+- `ENABLE_TELEGRAM_BUSINESS_AUTOMATION=true`
+- `TELEGRAM_BUSINESS_DRY_RUN=false`
+- `DD_SITE=datadoghq.com`
+
+### Railway
+
+Railway can deploy this repo from GitHub using the included `Dockerfile` and `railway.json`.
+
+For a true one-click Railway button, first create a Railway Template from this repo and configure the variables above in the Template Composer. Railway will then give you a template URL like this:
+
+```md
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/YOUR_TEMPLATE_CODE)
+```
+
+## Run Locally
+
+Install dependencies:
+
+```bash
+bun install
+```
+
+Create local config:
+
+```bash
+cp .env.example .env
+cp .mcp.json.example .mcp.json
+```
+
+Set at least:
+
+```bash
+TELEGRAM_BOT_TOKEN=...
+ANTHROPIC_API_KEY=...
+DATABASE_URL=...
+DD_API_KEY=...
+DD_APP_KEY=...
+DD_SITE=datadoghq.com
+```
+
+Start the bot:
+
+```bash
+bun run start
+```
+
+For local iteration:
+
+```bash
+bun run dev
+```
+
+## Model Provider
+
+The default model is Anthropic Claude Sonnet 4.5:
+
+```bash
+PI_MODEL=anthropic/claude-sonnet-4-5
+ANTHROPIC_API_KEY=...
+```
+
+To use OpenRouter:
 
 ```bash
 PI_PROVIDER=openrouter
@@ -165,161 +159,64 @@ OPENROUTER_API_KEY=...
 OPENROUTER_MODEL=google/gemini-3.1-flash-lite
 ```
 
-For OpenAI Codex, use:
+To use OpenAI Codex:
 
 ```bash
 PI_PROVIDER=openai-codex
 OPENAI_CODEX_AUTH_JSON='{"openai-codex":{...}}'
 ```
 
-You can also set the individual `OPENAI_CODEX_ACCESS_TOKEN`, `OPENAI_CODEX_REFRESH_TOKEN`, `OPENAI_CODEX_EXPIRES_AT_MS`, and `OPENAI_CODEX_ACCOUNT_ID` fields instead of `OPENAI_CODEX_AUTH_JSON`.
+You can also set `OPENAI_CODEX_ACCESS_TOKEN`, `OPENAI_CODEX_REFRESH_TOKEN`, `OPENAI_CODEX_EXPIRES_AT_MS`, and `OPENAI_CODEX_ACCOUNT_ID` instead of `OPENAI_CODEX_AUTH_JSON`.
 
-### Railway
+## Access Control
 
-Railway can deploy this repo directly from GitHub because the repo now includes a root `Dockerfile` and `railway.json`. For a real one-click Railway button, create a Railway Template from this repo, configure the variables below in the Template Composer, then replace this placeholder with the generated template URL:
-
-```md
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/YOUR_TEMPLATE_CODE)
-```
-
-Railway template variables:
-
-- required secrets: `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY`
-- defaults: `PI_MODEL=anthropic/claude-sonnet-4-5`, `ENABLE_TELEGRAM_NATIVE_STREAMING=true`, `ENABLE_TELEGRAM_BUSINESS_AUTOMATION=true`, `TELEGRAM_BUSINESS_DRY_RUN=false`, `DD_SITE=datadoghq.com`
-- OpenRouter alternative: set `PI_PROVIDER=openrouter` and require `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` instead of `ANTHROPIC_API_KEY`
-- OpenAI Codex alternative: set `PI_PROVIDER=openai-codex` and require `OPENAI_CODEX_AUTH_JSON` instead of `ANTHROPIC_API_KEY`
-
-## Configuration
-
-### Telegram access control
-
-- `ALLOWED_USER_IDS` — optional comma-separated Telegram user IDs allowed to DM the bot
-- `ALLOWED_GROUP_ID` — optional Telegram group or supergroup ID; members of this group can use the bot, and the group itself can chat with it
-- `ENABLE_TELEGRAM_NATIVE_STREAMING` — optional, defaults to `true`; uses Telegram `sendMessageDraft` for private-DM response previews
-- `ENABLE_TELEGRAM_BUSINESS_AUTOMATION` — optional, defaults to `true`; set to `false` to ignore Telegram Business / Chat Automation updates
-- `TELEGRAM_BUSINESS_ALLOWED_OWNER_IDS` — optional comma-separated Telegram user IDs whose connected Business accounts may auto-reply; empty allows all connected owners
-- `TELEGRAM_BUSINESS_DRY_RUN` — optional, defaults to `false`; runs Business automation without sending the final reply
-
-### Agent runtime
-
-- `PI_WORKDIR` — optional working directory for pi
-- `ANTHROPIC_API_KEY` — required for the default Anthropic model unless Anthropic auth is already configured in pi settings
-- `PI_MODEL` — optional explicit `provider/model-id`; defaults to `anthropic/claude-sonnet-4-5`
-- `PI_PROVIDER` — optional product-level provider choice: `openrouter` or `openai-codex`
-- `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` — required when `PI_PROVIDER=openrouter`; model may be `google/...` or `openrouter/google/...`
-- `OPENAI_CODEX_AUTH_JSON` — optional OpenAI Codex credential payload; accepts either the full auth file object or the nested `openai-codex` credential
-- `OPENAI_CODEX_ACCESS_TOKEN`, `OPENAI_CODEX_REFRESH_TOKEN`, `OPENAI_CODEX_EXPIRES_AT_MS`, `OPENAI_CODEX_ACCOUNT_ID` — OpenAI Codex credential fields when not using `OPENAI_CODEX_AUTH_JSON`
-- `OPENAI_CODEX_MODEL` — optional when `PI_PROVIDER=openai-codex`; defaults to `gpt-5.3-codex`
-- `PI_THINKING_LEVEL` — optional thinking level
-- `PI_EXTENSION_PATHS` — optional extra extension paths
-- `PI_SYSTEM_PROMPT_PATH` — optional path to the operator system prompt file
-- `PI_SESSION_DIR` — optional directory for persisted per-chat pi sessions
-
-Default operator prompt:
-
-- `prompts/system-prompt.md`
-
-## File and media delivery
-
-The bot exposes a custom pi tool:
-
-- `telegram_queue_attachment`
-
-This lets the agent send useful investigation artifacts back into Telegram after the final reply.
-
-Supported attachment kinds:
-
-- `document`
-- `photo`
-- `video`
-- `animation`
-- `audio`
-- `voice`
-- `video_note`
-- `sticker`
-- `auto`
-
-For safety:
-
-- files must already exist on disk
-- files must stay inside `TELEGRAM_ATTACHMENT_ROOTS`
-- relative paths are resolved from `PI_WORKDIR`
-- files are validated before send
-
-When compatible items are queued consecutively, the bot groups them more cleanly where Telegram allows it.
-
-## Runtime behavior
-
-By default, the bot:
-
-- persists per-chat sessions across restarts
-- keeps Telegram typing alive during long investigations
-- streams private-DM answer drafts with Telegram `sendMessageDraft`
-- edits a live progress message during longer group and Business runs
-- renders final answers with Telegram HTML formatting
-- falls back to plain text if Telegram rejects formatted output
-- writes audit logs to `logs/audit-log.json`
-
-### Telegram Business / Chat Automation
-
-To support profile automation, enable Business Mode for the bot in BotFather. Business / Chat Automation updates are enabled by default; set this only if you want to disable them:
+By default, anyone who can message the bot can use it. For internal deployments, set one or both:
 
 ```bash
-ENABLE_TELEGRAM_BUSINESS_AUTOMATION=false
+ALLOWED_USER_IDS=123456789,987654321
+ALLOWED_GROUP_ID=-1001234567890
 ```
 
-Users connect and scope access from Telegram Settings > Chat Automation. Telegram remains authoritative for whether the bot receives messages and whether it can reply. The bot mirrors the latest `business_connection` state for audit/debugging and checks `can_reply` before sending with `business_connection_id`.
+If `ALLOWED_GROUP_ID` is set, members of that group can use the bot in the group and in DMs, as long as the bot can verify membership.
 
-## Included sources
+## Files And Exports
 
-This repo currently includes local MCP servers for:
+The agent can send generated artifacts back to Telegram, such as CSV exports, logs, images, and documents.
 
-- **Postgres** — read-only database inspection
-- **Datadog** — logs and error investigation
+For safety, files must already exist on disk and stay inside `TELEGRAM_ATTACHMENT_ROOTS`.
 
-The MCP adapter is configured so these sources appear to pi as direct tools.
+```bash
+TELEGRAM_ATTACHMENT_ROOTS=/data/artifacts,/app/artifacts
+```
 
-## Stack
+## Boundaries
 
-For teams evaluating or extending the implementation:
+`operator-agent` is built for internal, self-hosted investigation. It is a strong fit for:
 
-- runtime: **Bun**
-- Telegram bot: **grammY**
-- agent runtime: **pi SDK** via `@mariozechner/pi-coding-agent`
-- MCP bridge: project-local **`pi-mcp-adapter`** config via `.mcp.json`
-- local connectors:
-  - `packages/postgres-mcp`
-  - `packages/datadog-mcp`
-- Telegram rendering package:
-  - `packages/telegram-markdown-html`
+- support and ops workflows
+- read-only production context
+- account-level investigation
+- incident triage and follow-up analysis
 
-pi auth follows standard pi conventions, including:
+It is not meant to be:
 
-- `~/.pi/agent/auth.json`
-- provider API keys in env such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`
-- extension discovery from `~/.pi/agent/extensions/` and `.pi/extensions/`
-- project-local pi packages from `.pi/settings.json`
+- a consumer support bot
+- a hosted multi-tenant SaaS product
+- a system that automatically understands your business without connected tools
+- a place to expose broad write access to production systems
 
-The default and product-level provider choices map to pi like this:
+## Maintainers
 
-- Default: uses `anthropic/claude-sonnet-4-5`; set `ANTHROPIC_API_KEY` unless Anthropic auth is already configured in pi settings.
-- OpenRouter: set `PI_PROVIDER=openrouter`, `OPENROUTER_API_KEY`, and `OPENROUTER_MODEL`; the runtime maps the model to `openrouter/<model>` and lets pi read the key from the environment.
-- OpenAI Codex: set `PI_PROVIDER=openai-codex` and provide either `OPENAI_CODEX_AUTH_JSON` or the individual `OPENAI_CODEX_*` token fields; the runtime writes a refreshed/fresher credential into pi auth storage and uses `openai-codex/gpt-5.3-codex` unless `OPENAI_CODEX_MODEL` is set.
+Implementation notes live in:
 
-## Repo guide
+- `docs/architecture.md`
+- `docs/investigation-workflows.md`
+- `docs/positioning.md`
 
-- `index.ts` — runtime entrypoint
-- `src/config.ts` — environment parsing and startup configuration logging
-- `src/telegram/handlers.ts` — Telegram routing, access checks, and Business update handling
-- `src/telegram/replies.ts` — typing, progress, draft streaming, final replies, and reply fallbacks
-- `src/telegram/attachments.ts` — attachment validation and Telegram media delivery
-- `src/pi/bridge.ts` — pi sessions, per-chat queues, progress normalization, and pi tools
-- `src/audit.ts` — bounded JSON audit log writer
-- `prompts/system-prompt.md` — operator behavior prompt
-- `.mcp.json` — MCP adapter configuration
-- `packages/postgres-mcp` — local Postgres MCP server
-- `packages/datadog-mcp` — local Datadog MCP server
-- `packages/telegram-markdown-html` — Telegram HTML renderer
-- `docs/architecture.md` — module boundaries and extension guidelines
-- `docs/investigation-workflows.md` — workflow notes
-- `docs/positioning.md` — internal positioning notes
+Validation:
+
+```bash
+bun run check
+bun test tests
+docker build -t operator-agent:local .
+```
