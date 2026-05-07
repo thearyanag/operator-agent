@@ -114,6 +114,7 @@ cp .env.example .env
 At minimum, set:
 
 - `TELEGRAM_BOT_TOKEN`
+- `ANTHROPIC_API_KEY` unless Anthropic auth is already configured in pi settings
 
 If you want the default investigation sources, also configure:
 
@@ -145,17 +146,70 @@ For development:
 bun run dev
 ```
 
+## One-click deploy
+
+### Render
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/thearyanag/operator-agent)
+
+The Render button uses `render.yaml` and deploys `operator-agent` as a Docker background worker. It prefills safe defaults and prompts for secrets during the initial Blueprint flow:
+
+- required secrets: `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY`
+- prefilled defaults: `PI_MODEL=anthropic/claude-sonnet-4-5`, Telegram native streaming enabled, Telegram Business automation enabled, `DD_SITE=datadoghq.com`
+
+For OpenRouter instead of Anthropic, deploy first and then change the service environment:
+
+```bash
+PI_PROVIDER=openrouter
+OPENROUTER_API_KEY=...
+OPENROUTER_MODEL=google/gemini-3.1-flash-lite
+```
+
+For OpenAI Codex, use:
+
+```bash
+PI_PROVIDER=openai-codex
+OPENAI_CODEX_AUTH_JSON='{"openai-codex":{...}}'
+```
+
+You can also set the individual `OPENAI_CODEX_ACCESS_TOKEN`, `OPENAI_CODEX_REFRESH_TOKEN`, `OPENAI_CODEX_EXPIRES_AT_MS`, and `OPENAI_CODEX_ACCOUNT_ID` fields instead of `OPENAI_CODEX_AUTH_JSON`.
+
+### Railway
+
+Railway can deploy this repo directly from GitHub because the repo now includes a root `Dockerfile` and `railway.json`. For a real one-click Railway button, create a Railway Template from this repo, configure the variables below in the Template Composer, then replace this placeholder with the generated template URL:
+
+```md
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/YOUR_TEMPLATE_CODE)
+```
+
+Railway template variables:
+
+- required secrets: `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY`
+- defaults: `PI_MODEL=anthropic/claude-sonnet-4-5`, `ENABLE_TELEGRAM_NATIVE_STREAMING=true`, `ENABLE_TELEGRAM_BUSINESS_AUTOMATION=true`, `TELEGRAM_BUSINESS_DRY_RUN=false`, `DD_SITE=datadoghq.com`
+- OpenRouter alternative: set `PI_PROVIDER=openrouter` and require `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` instead of `ANTHROPIC_API_KEY`
+- OpenAI Codex alternative: set `PI_PROVIDER=openai-codex` and require `OPENAI_CODEX_AUTH_JSON` instead of `ANTHROPIC_API_KEY`
+
 ## Configuration
 
 ### Telegram access control
 
 - `ALLOWED_USER_IDS` — optional comma-separated Telegram user IDs allowed to DM the bot
 - `ALLOWED_GROUP_ID` — optional Telegram group or supergroup ID; members of this group can use the bot, and the group itself can chat with it
+- `ENABLE_TELEGRAM_NATIVE_STREAMING` — optional, defaults to `true`; uses Telegram `sendMessageDraft` for private-DM response previews
+- `ENABLE_TELEGRAM_BUSINESS_AUTOMATION` — optional, defaults to `true`; set to `false` to ignore Telegram Business / Chat Automation updates
+- `TELEGRAM_BUSINESS_ALLOWED_OWNER_IDS` — optional comma-separated Telegram user IDs whose connected Business accounts may auto-reply; empty allows all connected owners
+- `TELEGRAM_BUSINESS_DRY_RUN` — optional, defaults to `false`; runs Business automation without sending the final reply
 
 ### Agent runtime
 
 - `PI_WORKDIR` — optional working directory for pi
-- `PI_MODEL` — optional explicit `provider/model-id`
+- `ANTHROPIC_API_KEY` — required for the default Anthropic model unless Anthropic auth is already configured in pi settings
+- `PI_MODEL` — optional explicit `provider/model-id`; defaults to `anthropic/claude-sonnet-4-5`
+- `PI_PROVIDER` — optional product-level provider choice: `openrouter` or `openai-codex`
+- `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` — required when `PI_PROVIDER=openrouter`; model may be `google/...` or `openrouter/google/...`
+- `OPENAI_CODEX_AUTH_JSON` — optional OpenAI Codex credential payload; accepts either the full auth file object or the nested `openai-codex` credential
+- `OPENAI_CODEX_ACCESS_TOKEN`, `OPENAI_CODEX_REFRESH_TOKEN`, `OPENAI_CODEX_EXPIRES_AT_MS`, `OPENAI_CODEX_ACCOUNT_ID` — OpenAI Codex credential fields when not using `OPENAI_CODEX_AUTH_JSON`
+- `OPENAI_CODEX_MODEL` — optional when `PI_PROVIDER=openai-codex`; defaults to `gpt-5.3-codex`
 - `PI_THINKING_LEVEL` — optional thinking level
 - `PI_EXTENSION_PATHS` — optional extra extension paths
 - `PI_SYSTEM_PROMPT_PATH` — optional path to the operator system prompt file
@@ -200,10 +254,21 @@ By default, the bot:
 
 - persists per-chat sessions across restarts
 - keeps Telegram typing alive during long investigations
-- edits a live progress message during longer runs
+- streams private-DM answer drafts with Telegram `sendMessageDraft`
+- edits a live progress message during longer group and Business runs
 - renders final answers with Telegram HTML formatting
 - falls back to plain text if Telegram rejects formatted output
 - writes audit logs to `logs/audit-log.json`
+
+### Telegram Business / Chat Automation
+
+To support profile automation, enable Business Mode for the bot in BotFather. Business / Chat Automation updates are enabled by default; set this only if you want to disable them:
+
+```bash
+ENABLE_TELEGRAM_BUSINESS_AUTOMATION=false
+```
+
+Users connect and scope access from Telegram Settings > Chat Automation. Telegram remains authoritative for whether the bot receives messages and whether it can reply. The bot mirrors the latest `business_connection` state for audit/debugging and checks `can_reply` before sending with `business_connection_id`.
 
 ## Included sources
 
@@ -235,13 +300,26 @@ pi auth follows standard pi conventions, including:
 - extension discovery from `~/.pi/agent/extensions/` and `.pi/extensions/`
 - project-local pi packages from `.pi/settings.json`
 
+The default and product-level provider choices map to pi like this:
+
+- Default: uses `anthropic/claude-sonnet-4-5`; set `ANTHROPIC_API_KEY` unless Anthropic auth is already configured in pi settings.
+- OpenRouter: set `PI_PROVIDER=openrouter`, `OPENROUTER_API_KEY`, and `OPENROUTER_MODEL`; the runtime maps the model to `openrouter/<model>` and lets pi read the key from the environment.
+- OpenAI Codex: set `PI_PROVIDER=openai-codex` and provide either `OPENAI_CODEX_AUTH_JSON` or the individual `OPENAI_CODEX_*` token fields; the runtime writes a refreshed/fresher credential into pi auth storage and uses `openai-codex/gpt-5.3-codex` unless `OPENAI_CODEX_MODEL` is set.
+
 ## Repo guide
 
-- `index.ts` — main Telegram bot
+- `index.ts` — runtime entrypoint
+- `src/config.ts` — environment parsing and startup configuration logging
+- `src/telegram/handlers.ts` — Telegram routing, access checks, and Business update handling
+- `src/telegram/replies.ts` — typing, progress, draft streaming, final replies, and reply fallbacks
+- `src/telegram/attachments.ts` — attachment validation and Telegram media delivery
+- `src/pi/bridge.ts` — pi sessions, per-chat queues, progress normalization, and pi tools
+- `src/audit.ts` — bounded JSON audit log writer
 - `prompts/system-prompt.md` — operator behavior prompt
 - `.mcp.json` — MCP adapter configuration
 - `packages/postgres-mcp` — local Postgres MCP server
 - `packages/datadog-mcp` — local Datadog MCP server
 - `packages/telegram-markdown-html` — Telegram HTML renderer
+- `docs/architecture.md` — module boundaries and extension guidelines
 - `docs/investigation-workflows.md` — workflow notes
 - `docs/positioning.md` — internal positioning notes
