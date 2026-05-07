@@ -96,13 +96,9 @@ Prefilled:
 
 ### Railway
 
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/To01dE?referralCode=FKNyCM&utm_medium=integration&utm_source=template&utm_campaign=generic)
+
 Railway can deploy this repo from GitHub using the included `Dockerfile` and `railway.json`.
-
-For a true one-click Railway button, first create a Railway Template from this repo and configure the variables above in the Template Composer. Railway will then give you a template URL like this:
-
-```md
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/YOUR_TEMPLATE_CODE)
-```
 
 ## Run Locally
 
