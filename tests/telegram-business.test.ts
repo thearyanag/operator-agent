@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { BusinessConnectionStore, canReplyAsBusinessAccount } from "./src/telegram/business";
+import { BusinessConnectionStore, canReplyAsBusinessAccount } from "../src/telegram/business";
 
 function makeConnection(overrides: Record<string, unknown> = {}) {
   return {

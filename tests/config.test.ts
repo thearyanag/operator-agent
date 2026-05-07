@@ -13,7 +13,7 @@ delete Bun.env.OPENAI_CODEX_EXPIRES_AT_MS;
 delete Bun.env.OPENAI_CODEX_EXPIRES_AT;
 delete Bun.env.OPENAI_CODEX_ACCOUNT_ID;
 
-const { loadConfig } = await import("./src/config");
+const { loadConfig } = await import("../src/config");
 
 const baseEnv = {
   TELEGRAM_BOT_TOKEN: "test-token",
