@@ -18,6 +18,8 @@ services:
         value: "true"
       - key: TELEGRAM_BUSINESS_DRY_RUN
         value: "false"
+      - key: OPERATOR_STATE_DB_PATH
+        value: /data/operator-state/operator.sqlite
       - key: DATABASE_URL
         sync: false
       - key: DD_API_KEY

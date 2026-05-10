@@ -41,7 +41,8 @@ This is an internal operator copilot, not a public support chatbot or a replacem
 - shows live progress during longer group and Business chats
 - can run from a user's connected Telegram Business / Chat Automation profile
 - sends useful files, screenshots, exports, or other artifacts back to Telegram
-- records audit logs for prompts, failures, and reply delivery
+- records SQLite audit events for prompts, failures, and reply delivery
+- supports `/investigate`, `/timeline`, `/handoff`, `/case-save`, `/case-open`, `/case-list`, and `/reset` workflows
 
 ## Data Sources
 
@@ -92,6 +93,7 @@ Prefilled:
 - `ENABLE_TELEGRAM_NATIVE_STREAMING=true`
 - `ENABLE_TELEGRAM_BUSINESS_AUTOMATION=true`
 - `TELEGRAM_BUSINESS_DRY_RUN=false`
+- `OPERATOR_STATE_DB_PATH=/data/operator-state/operator.sqlite`
 - `DD_SITE=datadoghq.com`
 
 ### Railway
@@ -124,6 +126,26 @@ DATABASE_URL=...
 DD_API_KEY=...
 DD_APP_KEY=...
 DD_SITE=datadoghq.com
+```
+
+Runtime Telegram sessions, run lifecycle records, and audit events are stored in SQLite. By default local runs use:
+
+```bash
+OPERATOR_STATE_DB_PATH=./.operator/state/operator.sqlite
+```
+
+Use a persistent volume path for deployments.
+
+To import an old `logs/audit-log.json` file into SQLite:
+
+```bash
+bun run migrate:audit
+```
+
+To check the local runtime database:
+
+```bash
+bun run doctor
 ```
 
 Start the bot:
@@ -174,6 +196,16 @@ ALLOWED_GROUP_ID=-1001234567890
 ```
 
 If `ALLOWED_GROUP_ID` is set, members of that group can use the bot in the group and in DMs, as long as the bot can verify membership.
+
+## Investigation Commands
+
+- `/investigate <id>` sets the active investigation subject for the chat and asks for a structured investigation.
+- `/timeline` builds a timeline for the active investigation.
+- `/handoff` produces a concise support/engineering handoff.
+- `/case-save` saves the active investigation to SQLite.
+- `/case-open <case-id>` restores a saved case into the current chat.
+- `/case-list` shows recent saved cases for the chat.
+- `/reset` clears the active investigation and in-memory agent session for the chat.
 
 ## Files And Exports
 

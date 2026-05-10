@@ -29,6 +29,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Persisted Telegram pi sessions
 .pi/telegram-sessions/
 
+# Operator runtime state
+.operator/
+
 # caches
 .eslintcache
 .cache

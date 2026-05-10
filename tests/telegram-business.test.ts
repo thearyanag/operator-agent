@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { mkdtemp } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { OperatorStateDb } from "../src/state/operator-db";
 import { BusinessConnectionStore, canReplyAsBusinessAccount } from "../src/telegram/business";
 
 function makeConnection(overrides: Record<string, unknown> = {}) {
@@ -37,4 +41,22 @@ test("requires enabled connection and can_reply to reply as business account", (
   expect(canReplyAsBusinessAccount(store.set(makeConnection()))).toBe(true);
   expect(canReplyAsBusinessAccount(store.set(makeConnection({ is_enabled: false })))).toBe(false);
   expect(canReplyAsBusinessAccount(store.set(makeConnection({ rights: {} })))).toBe(false);
+});
+
+test("persists Telegram Business connection state in SQLite", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "operator-agent-business-"));
+  const stateDb = new OperatorStateDb(join(dir, "operator.sqlite"));
+  const store = new BusinessConnectionStore(stateDb);
+
+  store.set(makeConnection());
+
+  const reloadedStore = new BusinessConnectionStore(stateDb);
+  expect(reloadedStore.get("biz-1")).toMatchObject({
+    id: "biz-1",
+    ownerTelegramUserId: 123,
+    ownerPrivateChatId: 456,
+    isEnabled: true,
+  });
+
+  stateDb.close();
 });

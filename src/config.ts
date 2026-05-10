@@ -1,7 +1,6 @@
 import { join, resolve } from "node:path";
 import type { AppConfig, OpenAICodexAuthConfig, PiProviderMode, ThinkingLevel } from "./types";
 
-const AUDIT_LOG_MAX_BYTES = 10 * 1024 * 1024;
 const TELEGRAM_TYPING_INTERVAL_MS = 4_000;
 const TELEGRAM_MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
 const TELEGRAM_DRAFT_INTERVAL_MS = 650;
@@ -47,8 +46,7 @@ export function loadConfig(env: Record<string, string | undefined> = Bun.env, cw
     piSystemPromptPath,
     piSessionDir: env.PI_SESSION_DIR?.trim() || join(cwd, ".pi", "telegram-sessions"),
     telegramAttachmentRoots: parseTelegramAttachmentRoots(env.TELEGRAM_ATTACHMENT_ROOTS, piWorkdir),
-    auditLogPath: env.AUDIT_LOG_PATH?.trim() || join(cwd, "logs", "audit-log.json"),
-    auditLogMaxBytes: AUDIT_LOG_MAX_BYTES,
+    operatorStateDbPath: env.OPERATOR_STATE_DB_PATH?.trim() || join(cwd, ".operator", "state", "operator.sqlite"),
     telegramTypingIntervalMs: TELEGRAM_TYPING_INTERVAL_MS,
     telegramMaxDocumentBytes: TELEGRAM_MAX_DOCUMENT_BYTES,
     telegramDraftIntervalMs: TELEGRAM_DRAFT_INTERVAL_MS,
@@ -84,9 +82,7 @@ export function logStartupConfig(appConfig: AppConfig): void {
     console.log(`Telegram Business dry run: ${appConfig.telegramBusinessDryRun ? "enabled" : "disabled"}`);
   }
 
-  console.log(
-    `Audit log: ${appConfig.auditLogPath} (max ${Math.round(appConfig.auditLogMaxBytes / 1024 / 1024)} MB)`,
-  );
+  console.log(`Operator state DB: ${appConfig.operatorStateDbPath}`);
 
   if (appConfig.allowedGroupId !== null) {
     console.log(`Allowed group ID: ${appConfig.allowedGroupId}`);
@@ -134,7 +130,7 @@ function resolvePiModel(env: Record<string, string | undefined>, providerMode: P
 
   if (providerMode === "openrouter") {
     requireEnv(env, "OPENROUTER_API_KEY");
-    return normalizeProviderModel("openrouter", explicitModel || requireEnv(env, "OPENROUTER_MODEL"));
+    return normalizeProviderModel("openrouter", env.OPENROUTER_MODEL?.trim() || explicitModel || requireEnv(env, "OPENROUTER_MODEL"));
   }
 
   if (providerMode === "openai-codex") {

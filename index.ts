@@ -2,9 +2,11 @@ import { Bot } from "grammy";
 import { AuditLogger, serializeMessagesForAudit } from "./src/audit";
 import { config, logStartupConfig } from "./src/config";
 import { createPiBridge } from "./src/pi/bridge";
+import { OperatorStateDb } from "./src/state/operator-db";
 import { registerTelegramHandlers } from "./src/telegram/handlers";
 
-const auditLogger = new AuditLogger(config.auditLogPath, config.auditLogMaxBytes);
+const stateDb = new OperatorStateDb(config.operatorStateDbPath);
+const auditLogger = new AuditLogger(stateDb);
 
 const piBridge = await createPiBridge(config, {
   onEmptyResponse: async ({ sessionKey, prompt, newMessages, recentMessages, totalMessages, startMessageCount }) => {
@@ -18,11 +20,10 @@ const piBridge = await createPiBridge(config, {
       startMessageCount,
     });
   },
-  onSessionLoaded: async ({ sessionKey, sessionFile, modelFallbackMessage }) => {
+  onSessionLoaded: async ({ sessionKey, modelFallbackMessage }) => {
     await auditLogger.log({
       event: "pi_session_loaded",
       sessionKey,
-      sessionFile,
       response: modelFallbackMessage,
     });
   },
@@ -34,6 +35,7 @@ registerTelegramHandlers(bot, {
   appConfig: config,
   auditLogger,
   piBridge,
+  stateDb,
 });
 
 logStartupConfig(config);

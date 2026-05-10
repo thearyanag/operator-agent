@@ -10,7 +10,7 @@
 4. `src/pi/bridge.ts` owns pi sessions, per-chat prompt queues, pi event normalization, and the `telegram_queue_attachment` tool.
 5. `src/telegram/replies.ts` owns typing indicators, progress messages, private-DM draft streaming, final reply rendering, and error delivery.
 6. `src/telegram/attachments.ts` validates queued files and sends them through the correct Telegram media APIs.
-7. `src/audit.ts` writes bounded JSON audit logs for incoming messages, pi runs, failures, replies, and Business connection state.
+7. `src/state/operator-db.ts` owns the local SQLite runtime database for Telegram sessions, runs, Business connections, artifacts, cases, evidence, and audit events.
 
 ## Module Boundaries
 
@@ -19,6 +19,7 @@
 - `src/telegram/handlers.ts` should stay HTTP/chat focused: route updates, reject unsafe requests, and call the pi bridge.
 - `src/telegram/replies.ts` should own Telegram delivery mechanics, including fallbacks when Telegram rejects formatted HTML.
 - `src/telegram/business.ts` should stay limited to Business connection normalization and reply eligibility.
+- `src/state/operator-db.ts` should own canonical operator runtime tables; config, prompts, MCP config, PI-owned session files, and explicit user artifacts stay file-backed.
 - `packages/*` are reusable local packages or MCP servers. Keep product runtime code in `src/` unless it is intentionally reusable.
 
 ## Extension Guidelines
@@ -27,7 +28,7 @@
 - Add new Telegram update types in `src/telegram/handlers.ts`; keep prompt construction in `src/telegram/context.ts`.
 - Add new pi-facing tools in `src/pi/bridge.ts` only when the tool needs active session context.
 - Add reusable source integrations as local MCP packages under `packages/*`.
-- Keep audit entries structured and bounded; large raw payloads should be truncated through `AuditLogger`.
+- Keep audit entries structured and bounded; large raw payloads should be truncated through `AuditLogger` before they are inserted into SQLite.
 
 ## Safety Defaults
 

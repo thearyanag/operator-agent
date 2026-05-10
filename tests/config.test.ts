@@ -24,6 +24,19 @@ test("defaults pi model to Anthropic Claude Sonnet 4.5", () => {
 
   expect(appConfig.piProviderMode).toBe("default");
   expect(appConfig.piModel).toBe("anthropic/claude-sonnet-4-5");
+  expect(appConfig.operatorStateDbPath).toBe("/tmp/operator-agent/.operator/state/operator.sqlite");
+});
+
+test("accepts a custom operator state database path", () => {
+  const appConfig = loadConfig(
+    {
+      ...baseEnv,
+      OPERATOR_STATE_DB_PATH: "/data/operator/operator.sqlite",
+    },
+    "/tmp/operator-agent",
+  );
+
+  expect(appConfig.operatorStateDbPath).toBe("/data/operator/operator.sqlite");
 });
 
 test("maps OpenRouter provider inputs into a pi model ref", () => {
@@ -39,6 +52,36 @@ test("maps OpenRouter provider inputs into a pi model ref", () => {
 
   expect(appConfig.piProviderMode).toBe("openrouter");
   expect(appConfig.piModel).toBe("openrouter/google/gemini-3.1-flash-lite-preview");
+});
+
+test("prefers OPENROUTER_MODEL over generic PI_MODEL in OpenRouter mode", () => {
+  const appConfig = loadConfig(
+    {
+      ...baseEnv,
+      PI_PROVIDER: "openrouter",
+      PI_MODEL: "anthropic/claude-haiku-4-5",
+      OPENROUTER_API_KEY: "sk-or-test",
+      OPENROUTER_MODEL: "~anthropic/claude-haiku-latest",
+    },
+    "/tmp/operator-agent",
+  );
+
+  expect(appConfig.piProviderMode).toBe("openrouter");
+  expect(appConfig.piModel).toBe("openrouter/~anthropic/claude-haiku-latest");
+});
+
+test("uses PI_MODEL as OpenRouter fallback when OPENROUTER_MODEL is absent", () => {
+  const appConfig = loadConfig(
+    {
+      ...baseEnv,
+      PI_PROVIDER: "openrouter",
+      PI_MODEL: "openrouter/anthropic/claude-haiku-4.5",
+      OPENROUTER_API_KEY: "sk-or-test",
+    },
+    "/tmp/operator-agent",
+  );
+
+  expect(appConfig.piModel).toBe("openrouter/anthropic/claude-haiku-4.5");
 });
 
 test("requires an OpenRouter API key in OpenRouter mode", () => {

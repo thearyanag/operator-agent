@@ -1,6 +1,6 @@
 # Investigation Workflows Draft
 
-Status: working product spec for the operator investigation command surface.
+Status: baseline implemented for the operator investigation command surface.
 
 ## Goal
 
@@ -113,7 +113,7 @@ Persists the current investigation as a saved case.
 
 Expected behavior:
 - require active investigation context
-- save current case data to disk
+- save current case data to the operator state database
 - return generated case id
 
 Example saved data:
@@ -130,7 +130,7 @@ Example saved data:
 Loads a saved case into the current chat.
 
 Expected behavior:
-- load the saved case from disk
+- load the saved case from the operator state database
 - restore active investigation subject/context for this chat
 - optionally restore a compact case summary into the next pi prompt
 - confirm the case is active

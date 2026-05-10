@@ -30,7 +30,6 @@ export type PiBridgeHooks = {
   onEmptyResponse?: (context: EmptyPiResponseContext) => Promise<void> | void;
   onSessionLoaded?: (context: {
     sessionKey: string;
-    sessionFile?: string;
     modelFallbackMessage?: string;
   }) => Promise<void> | void;
 };
@@ -101,7 +100,6 @@ export class PiBridge {
       onEmptyResponse?: (context: EmptyPiResponseContext) => Promise<void> | void;
       onSessionLoaded?: (context: {
         sessionKey: string;
-        sessionFile?: string;
         modelFallbackMessage?: string;
       }) => Promise<void> | void;
     },
@@ -233,9 +231,14 @@ export class PiBridge {
       }
 
       const newMessages = session.messages.slice(startMessageCount);
-      const response = getLatestAssistantText(newMessages) ?? getLatestAssistantText(session.messages);
+      const response = getLatestAssistantText(newMessages);
 
       if (!response) {
+        const assistantError = getLatestAssistantError(newMessages);
+        if (assistantError) {
+          throw new Error(`provider returned no assistant content: ${assistantError}`);
+        }
+
         await this.options.onEmptyResponse?.({
           sessionKey,
           prompt,
@@ -255,6 +258,11 @@ export class PiBridge {
         attachments,
       };
     });
+  }
+
+  reset(sessionKey: string): void {
+    this.sessions.delete(sessionKey);
+    this.pendingAttachments.delete(sessionKey);
   }
 
   private async getSession(sessionKey: string): Promise<AgentSession> {
@@ -281,7 +289,6 @@ export class PiBridge {
 
     await this.options.onSessionLoaded?.({
       sessionKey,
-      sessionFile: session.sessionFile,
       modelFallbackMessage,
     });
 
@@ -445,6 +452,39 @@ function extractAssistantText(message: SessionMessage): string {
   }
 
   return text;
+}
+
+function getLatestAssistantError(messages: SessionMessage[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index] as SessionMessage & { errorMessage?: unknown; stopReason?: unknown };
+    if (message?.role !== "assistant") continue;
+    if (typeof message.errorMessage !== "string" || !message.errorMessage.trim()) continue;
+    return normalizeAssistantErrorMessage(message.errorMessage);
+  }
+
+  return undefined;
+}
+
+function normalizeAssistantErrorMessage(rawMessage: string): string {
+  const trimmed = rawMessage.trim();
+  const match = trimmed.match(/^(\d{3})\s+({.*})$/s);
+  if (match) {
+    try {
+      const parsed = JSON.parse(match[2]!);
+      const providerMessage = parsed?.error?.message;
+      if (typeof providerMessage === "string" && providerMessage.trim()) {
+        return `${match[1]} ${providerMessage.trim()}`;
+      }
+    } catch {
+      return clipAssistantError(trimmed);
+    }
+  }
+
+  return clipAssistantError(trimmed);
+}
+
+function clipAssistantError(message: string, maxLength = 1000): string {
+  return message.length <= maxLength ? message : `${message.slice(0, maxLength)}...[truncated]`;
 }
 
 function extractAssistantTextFromMessageLike(message: unknown): string {

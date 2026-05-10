@@ -127,6 +127,7 @@ export type AuditLogEntry = {
   prompt?: string;
   response?: string;
   durationMs?: number;
+  runId?: string;
   chunkCount?: number;
   replyMode?: ReplyRenderResult["mode"];
   attachmentCount?: number;
@@ -135,7 +136,6 @@ export type AuditLogEntry = {
   rawRecentMessages?: string;
   totalMessages?: number;
   startMessageCount?: number;
-  sessionFile?: string;
   surface?: TelegramSurface;
   businessConnectionId?: string;
   businessOwnerUserId?: number;
@@ -172,8 +172,7 @@ export type AppConfig = {
   piSystemPromptPath: string;
   piSessionDir: string;
   telegramAttachmentRoots: string[];
-  auditLogPath: string;
-  auditLogMaxBytes: number;
+  operatorStateDbPath: string;
   telegramTypingIntervalMs: number;
   telegramMaxDocumentBytes: number;
   telegramDraftIntervalMs: number;
