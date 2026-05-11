@@ -73,34 +73,16 @@ TELEGRAM_BUSINESS_ALLOWED_OWNER_IDS=123456789,987654321
 
 ## Deploy
 
-### Render
+| Step | Render | Railway |
+| --- | --- | --- |
+| 1. Deploy | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/thearyanag/operator-agent) | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/To01dE?referralCode=FKNyCM&utm_medium=integration&utm_source=template&utm_campaign=generic) |
+| 2. Service type | Background worker from the included `render.yaml`. | Docker service from the included `Dockerfile` and `railway.json`. |
+| 3. Required secrets | `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY` | `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY` |
+| 4. Safe defaults | `PI_MODEL=anthropic/claude-sonnet-4-5`, Telegram streaming and Business automation enabled, `DD_SITE=datadoghq.com`. | Use the same environment values as Render if the template does not prefill them. |
+| 5. Persistent state | The Blueprint creates a 1 GB disk mounted at `/data`. | The template creates a volume mounted at `/data`. |
+| 6. Start chatting | After deploy succeeds, message your Telegram bot. | After deploy succeeds, message your Telegram bot. |
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/thearyanag/operator-agent)
-
-Render deploys `operator-agent` as a background worker. The deploy form asks for secrets and prefills safe defaults.
-
-Required:
-
-- `TELEGRAM_BOT_TOKEN`
-- `ANTHROPIC_API_KEY`
-- `DATABASE_URL`
-- `DD_API_KEY`
-- `DD_APP_KEY`
-
-Prefilled:
-
-- `PI_MODEL=anthropic/claude-sonnet-4-5`
-- `ENABLE_TELEGRAM_NATIVE_STREAMING=true`
-- `ENABLE_TELEGRAM_BUSINESS_AUTOMATION=true`
-- `TELEGRAM_BUSINESS_DRY_RUN=false`
-- `OPERATOR_STATE_DB_PATH=/data/operator-state/operator.sqlite`
-- `DD_SITE=datadoghq.com`
-
-### Railway
-
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/To01dE?referralCode=FKNyCM&utm_medium=integration&utm_source=template&utm_campaign=generic)
-
-Railway can deploy this repo from GitHub using the included `Dockerfile` and `railway.json`.
+Render storage is declared in `render.yaml`. Railway volumes are configured in the Railway template composer, not `railway.json`.
 
 ## Run Locally
 

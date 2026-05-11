@@ -5,6 +5,10 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     autoDeployTrigger: off
+    disk:
+      name: operator-agent-data
+      mountPath: /data
+      sizeGB: 1
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
