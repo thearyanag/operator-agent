@@ -73,16 +73,16 @@ TELEGRAM_BUSINESS_ALLOWED_OWNER_IDS=123456789,987654321
 
 ## Deploy
 
-| Step | Render | Railway |
-| --- | --- | --- |
-| 1. Deploy | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/thearyanag/operator-agent) | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/To01dE?referralCode=FKNyCM&utm_medium=integration&utm_source=template&utm_campaign=generic) |
-| 2. Service type | Background worker from the included `render.yaml`. | Docker service from the included `Dockerfile` and `railway.json`. |
-| 3. Required secrets | `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY` | `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY` |
-| 4. Safe defaults | `PI_MODEL=anthropic/claude-sonnet-4-5`, Telegram streaming and Business automation enabled, `DD_SITE=datadoghq.com`. | Use the same environment values as Render if the template does not prefill them. |
-| 5. Persistent state | The Blueprint creates a 1 GB disk mounted at `/data`. | The template creates a volume mounted at `/data`. |
-| 6. Start chatting | After deploy succeeds, message your Telegram bot. | After deploy succeeds, message your Telegram bot. |
+| Step | Render | Railway | DigitalOcean |
+| --- | --- | --- | --- |
+| 1. Deploy | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/thearyanag/operator-agent) | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/To01dE?referralCode=FKNyCM&utm_medium=integration&utm_source=template&utm_campaign=generic) | [![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/thearyanag/operator-agent/tree/main) |
+| 2. Service type | Background worker from the included `render.yaml`. | Docker service from the included `Dockerfile` and `railway.json`. | Docker service from the included `.do/deploy.template.yaml`. |
+| 3. Required secrets | `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY` | `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY` | `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY` |
+| 4. Safe defaults | `PI_MODEL=anthropic/claude-sonnet-4-5`, Telegram streaming and Business automation enabled, `DD_SITE=datadoghq.com`. | Use the same environment values as Render if the template does not prefill them. | Uses the same defaults as Render. |
+| 5. Persistent state | The Blueprint creates a 1 GB disk mounted at `/data`. | The template creates a volume mounted at `/data`. | App Platform local filesystem state is ephemeral. Use an external state backend or choose Render/Railway for durable `/data` state. |
+| 6. Start chatting | After deploy succeeds, message your Telegram bot. | After deploy succeeds, message your Telegram bot. | After deploy succeeds and secrets are replaced, message your Telegram bot. |
 
-Render storage is declared in `render.yaml`. Railway volumes are configured in the Railway template composer, not `railway.json`.
+Render storage is declared in `render.yaml`. Railway volumes are configured in the Railway template composer, not `railway.json`. DigitalOcean's deploy button uses `.do/deploy.template.yaml`; App Platform does not provide persistent volumes.
 
 ## Run Locally
 

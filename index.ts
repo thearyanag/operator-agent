@@ -39,8 +39,36 @@ registerTelegramHandlers(bot, {
 });
 
 logStartupConfig(config);
+startHealthServer();
 
 bot.start({
   drop_pending_updates: true,
   allowed_updates: config.telegramAllowedUpdates,
 });
+
+function startHealthServer(): void {
+  const portValue = Bun.env.PORT?.trim();
+  if (!portValue) return;
+
+  const port = Number(portValue);
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+    console.warn(`Skipping health server because PORT is invalid: ${portValue}`);
+    return;
+  }
+
+  Bun.serve({
+    port,
+    fetch(request) {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/healthz" || pathname === "/") {
+        return new Response("ok\n", {
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
+
+      return new Response("not found\n", { status: 404 });
+    },
+  });
+
+  console.log(`Health server listening on port ${port}`);
+}

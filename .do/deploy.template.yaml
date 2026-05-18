@@ -1,0 +1,52 @@
+spec:
+  name: operator-agent
+  services:
+    - name: operator-agent
+      git:
+        branch: main
+        repo_clone_url: https://github.com/thearyanag/operator-agent.git
+      dockerfile_path: Dockerfile
+      run_command: bun run start
+      http_port: 8080
+      health_check:
+        http_path: /healthz
+      instance_count: 1
+      envs:
+        - key: TELEGRAM_BOT_TOKEN
+          scope: RUN_TIME
+          type: SECRET
+          value: replace-me
+        - key: ANTHROPIC_API_KEY
+          scope: RUN_TIME
+          type: SECRET
+          value: replace-me
+        - key: PI_MODEL
+          scope: RUN_TIME
+          value: anthropic/claude-sonnet-4-5
+        - key: ENABLE_TELEGRAM_NATIVE_STREAMING
+          scope: RUN_TIME
+          value: "true"
+        - key: ENABLE_TELEGRAM_BUSINESS_AUTOMATION
+          scope: RUN_TIME
+          value: "true"
+        - key: TELEGRAM_BUSINESS_DRY_RUN
+          scope: RUN_TIME
+          value: "false"
+        - key: OPERATOR_STATE_DB_PATH
+          scope: RUN_TIME
+          value: /data/operator-state/operator.sqlite
+        - key: DATABASE_URL
+          scope: RUN_TIME
+          type: SECRET
+          value: replace-me
+        - key: DD_API_KEY
+          scope: RUN_TIME
+          type: SECRET
+          value: replace-me
+        - key: DD_APP_KEY
+          scope: RUN_TIME
+          type: SECRET
+          value: replace-me
+        - key: DD_SITE
+          scope: RUN_TIME
+          value: datadoghq.com
