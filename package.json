@@ -11,6 +11,7 @@
     "start": "bun run index.ts",
     "check": "bunx tsc --noEmit",
     "doctor": "bun run scripts/doctor.ts",
+    "prewarm:mcp": "bun run scripts/prewarm-mcp-cache.ts",
     "migrate:audit": "bun run scripts/migrate-audit-log.ts"
   },
   "devDependencies": {

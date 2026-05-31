@@ -2,11 +2,18 @@ import { Bot } from "grammy";
 import { AuditLogger, serializeMessagesForAudit } from "./src/audit";
 import { config, logStartupConfig } from "./src/config";
 import { createPiBridge } from "./src/pi/bridge";
+import { prewarmMcpDirectToolCache } from "./src/pi/mcp-prewarm";
 import { OperatorStateDb } from "./src/state/operator-db";
 import { registerTelegramHandlers } from "./src/telegram/handlers";
 
 const stateDb = new OperatorStateDb(config.operatorStateDbPath);
 const auditLogger = new AuditLogger(stateDb);
+
+try {
+  await prewarmMcpDirectToolCache(config);
+} catch (error) {
+  console.warn(`MCP cache prewarm failed before pi startup: ${error instanceof Error ? error.message : String(error)}`);
+}
 
 const piBridge = await createPiBridge(config, {
   onEmptyResponse: async ({ sessionKey, prompt, newMessages, recentMessages, totalMessages, startMessageCount }) => {
