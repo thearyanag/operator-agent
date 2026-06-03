@@ -12,7 +12,8 @@ RUN bun install --frozen-lockfile --production \
 
 COPY . .
 RUN cp .mcp.json.example .mcp.json \
-  && mkdir -p /data/home /data/pi-sessions /data/operator-state /data/artifacts \
+  && mkdir -p /data/home /data/pi-sessions /data/operator-state /data/artifacts /data/operator-context \
+  && ln -s /data/operator-context /app/operator-context \
   && npm install pi-mcp-adapter --prefix /app/.pi/npm --omit=dev \
   && npm cache clean --force \
   && rm -rf /root/.npm
@@ -22,6 +23,7 @@ ENV HOME=/data/home
 ENV PI_WORKDIR=/app
 ENV PI_SESSION_DIR=/data/pi-sessions
 ENV OPERATOR_STATE_DB_PATH=/data/operator-state/operator.sqlite
+ENV OPERATOR_CONTEXT_DIR=/app/operator-context
 ENV TELEGRAM_ATTACHMENT_ROOTS=/data/artifacts,/app/artifacts
 
-CMD ["bun", "run", "start"]
+CMD ["sh", "-lc", "mkdir -p /data/home /data/pi-sessions /data/operator-state /data/artifacts /data/operator-context && bun run start"]

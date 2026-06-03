@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: operator-agent
     runtime: docker
     dockerfilePath: ./Dockerfile
@@ -11,6 +11,14 @@ services:
       sizeGB: 1
     envVars:
       - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_USERNAME
+        sync: false
+      - key: OPERATOR_DATABASE_URL
+        sync: false
+      - key: OPERATOR_OWNER_ID
+        sync: false
+      - key: OPERATOR_CONTROL_PANEL_TOKEN
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false

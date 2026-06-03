@@ -1,28 +1,38 @@
 # operator-agent
 
-`operator-agent` is a self-hosted Telegram copilot for understanding what happened to a user, an account, or a production issue.
+`operator-agent` is a self-hosted AI operator for Telegram.
 
-Instead of opening the admin dashboard, logs, SQL, deploy history, and a support thread separately, you ask one question in chat. The agent checks the systems you connect, returns a grounded answer, and keeps the investigation in the same conversation.
+It can sit inside team groups as a support/ops agent, and it can watch delegated personal Telegram conversations through Telegram Business / Chat Automation. The default product stance is conservative: it reads, records, summarizes, and drafts first; it only replies in team groups when explicitly tagged or replied to.
 
-## What You Ask
+The first version is self-hosted:
 
-- What happened to this user?
-- Where did they get stuck?
-- What errors did they hit?
-- Did a deploy or outage affect them?
-- What is this account's current state?
-- Which users were affected by this issue?
-- Can you send me the relevant export or evidence?
+- bring your own Telegram bot token
+- bring your own Postgres
+- bring your own auth / deployment boundary
 
-The best use case is follow-up investigation:
+## Product Modes
 
-> You: What happened to user 12345?
->
-> Agent: They completed signup, hit a billing error during onboarding, retried twice, and never finished activation. I found the failure in Datadog and confirmed the account state in Postgres.
->
-> You: Did the latest deploy cause it?
->
-> Agent: Likely yes. The first matching error appears three minutes after the deploy and affects the same endpoint. I found 11 similar failures in the last hour.
+### Team Operator
+
+Add the bot to a group. Operator observes messages, stores context, and stays quiet by default.
+
+It invokes the agent only when:
+
+- someone tags the bot, for example `@operator_bot can you check this?`
+- someone replies directly to the bot
+- someone uses an explicit command such as `/investigate`
+
+This mode is for support groups, ops rooms, customer triage, and internal team workflows where a bot should not spam every thread.
+
+### Personal Operator
+
+Connect the bot through Telegram Business / Chat Automation. Operator watches allowed delegated conversations, identifies important messages, creates digest items, and drafts replies.
+
+The MVP does not auto-send replies. It sends/stores draft text for the owner to review, edit, and send manually.
+
+### Assistant Mode
+
+Message the bot directly in a private DM. Operator answers immediately and keeps the existing per-chat pi session behavior.
 
 ## Who It Is For
 
@@ -31,17 +41,19 @@ The best use case is follow-up investigation:
 - ops teams investigating incidents and user journeys
 - product teams diagnosing onboarding, activation, and retention friction
 
-This is an internal operator copilot, not a public support chatbot or a replacement for every dashboard.
+This is an internal/self-hosted operator, not a hosted multi-tenant SaaS product yet.
 
 ## What It Does
 
-- answers in Telegram, where the operator is already working
-- keeps per-chat memory so follow-up questions stay in context
+- records conversations, observations, policy decisions, agent runs, outputs, summaries, memory, and audit events in an `operator` Postgres schema
+- watches Telegram groups in read-only mode by default
+- replies in groups only on mention/reply/explicit commands
+- turns delegated personal messages into digest items or draft replies
+- exposes a native Telegram Mini App control panel at `/app`
 - streams private DM drafts while the answer is forming
-- shows live progress during longer group and Business chats
-- can run from a user's connected Telegram Business / Chat Automation profile
+- acknowledges group requests with a thumbs-up reaction, shows typing, and streams answer text by editing one group message
+- exposes Operator context tools to pi dynamically: current-chat history in groups/business/current DMs, owner-wide history only in configured owner DMs
 - sends useful files, screenshots, exports, or other artifacts back to Telegram
-- records SQLite audit events for prompts, failures, and reply delivery
 - supports `/investigate`, `/timeline`, `/handoff`, `/case-save`, `/case-open`, `/case-list`, and `/reset` workflows
 
 ## Data Sources
@@ -53,11 +65,81 @@ The default setup includes read-only connectors for:
 
 You can add more pi/MCP tools over time, but the product works best when the connected tools are scoped to operator-safe investigation.
 
+## Postgres State
+
+Set `OPERATOR_DATABASE_URL` to enable the Operator system of record:
+
+```bash
+OPERATOR_DATABASE_URL=postgresql://operator:operator@localhost:5432/operator
+OPERATOR_OWNER_ID=11111111-1111-4111-8111-111111111111
+```
+
+Operator creates an `operator` schema with tables for conversations, observations, policies, runs, outputs, Telegram sessions, summaries, memory, audit events, and Telegram Business connection state.
+
+`DATABASE_URL` is still used by the optional Postgres MCP connector. In a simple self-hosted setup, it may point at the same Postgres database as `OPERATOR_DATABASE_URL`.
+
+SQLite remains as a local compatibility store while the Postgres path replaces runtime state gradually.
+
+## Context Artifacts
+
+When Operator is tagged or commanded, it writes a run-scoped Telegram context file before calling pi.
+
+The prompt includes:
+
+- the most recent 5 observed messages as a preview
+- a path to the full context file
+- a note to read that file when the answer depends on recent group history
+
+Default paths:
+
+- native local runs: `./.operator/context/<run-id>/telegram-context.md`
+- Docker/hosted runs: `/app/operator-context/<run-id>/telegram-context.md`
+- physical Docker/hosted volume path: `/data/operator-context/<run-id>/telegram-context.md`
+
+In Docker, `/app/operator-context` is a symlink to `/data/operator-context`, so pi sees a path inside its working tree while the file persists on the `/data` volume.
+
+Postgres stores artifact metadata in `operator.operator_outputs`:
+
+```sql
+select payload
+from operator.operator_outputs
+where type = 'artifact'
+order by created_at desc
+limit 5;
+```
+
+## Mini App
+
+If `PORT` is set, the app serves:
+
+- `/healthz` for health checks
+- `/app` for the native Telegram Mini App control panel
+- `/api/conversations` for chat/group registry data
+- `/api/outputs` for recent drafts, replies, and digest items
+- `/api/install-link` for the group-add link
+
+Set these values for the control panel:
+
+```bash
+TELEGRAM_BOT_USERNAME=operator_bot
+OPERATOR_CONTROL_PANEL_TOKEN=change-me
+```
+
+The Mini App API accepts either Telegram Web App init data or the configured bearer/query token.
+
+Set `ALLOWED_USER_IDS` when the Mini App should be limited to specific Telegram users. `OPERATOR_OWNER_ID` is the stable Postgres owner UUID, not a Telegram account ID.
+
+Set `OPERATOR_OWNER_TELEGRAM_IDS` to the Telegram user IDs that may use owner-wide Operator tools from private DM. Without it, pi can still read the current chat context during a run, but it will not receive the cross-chat owner context tool.
+
+```bash
+OPERATOR_OWNER_TELEGRAM_IDS=123456789
+```
+
 ## Telegram Business Automation
 
-Telegram Business / Chat Automation is enabled by default.
+Telegram Business / Chat Automation is enabled by default and powers Personal Operator mode.
 
-Users still control this from Telegram. A user must opt in by connecting the bot from Telegram Settings > Chat Automation, and Telegram decides which chats the bot can access and whether it can reply. The app mirrors the latest connection state for audit/debugging and only replies when Telegram grants `can_reply`.
+Users still control this from Telegram. A user must opt in by connecting the bot from Telegram Settings > Chat Automation, and Telegram decides which chats the bot can access. The MVP uses this for reading, digesting, and drafting; it does not auto-send delegated personal replies.
 
 To disable Business automation entirely:
 
@@ -76,15 +158,81 @@ TELEGRAM_BUSINESS_ALLOWED_OWNER_IDS=123456789,987654321
 | Step | Render | Railway | DigitalOcean |
 | --- | --- | --- | --- |
 | 1. Deploy | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/thearyanag/operator-agent) | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/To01dE?referralCode=FKNyCM&utm_medium=integration&utm_source=template&utm_campaign=generic) | [![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/thearyanag/operator-agent/tree/main) |
-| 2. Service type | Background worker from the included `render.yaml`. | Docker service from the included `Dockerfile` and `railway.json`. | Docker service from the included `.do/deploy.template.yaml`. |
-| 3. Required secrets | `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY` | `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY` | `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `DD_API_KEY`, `DD_APP_KEY` |
-| 4. Safe defaults | `PI_MODEL=anthropic/claude-sonnet-4-5`, Telegram streaming and Business automation enabled, `DD_SITE=datadoghq.com`. | Use the same environment values as Render if the template does not prefill them. | Uses the same defaults as Render. |
+| 2. Service type | Web service from the included `Dockerfile` if you want the Mini App. | Docker service from the included `Dockerfile` and `railway.json`. | Docker service from the included `.do/deploy.template.yaml`. |
+| 3. Required secrets | `TELEGRAM_BOT_TOKEN`, `OPERATOR_DATABASE_URL`, plus one model provider credential. | `TELEGRAM_BOT_TOKEN`, `OPERATOR_DATABASE_URL`, plus one model provider credential. | `TELEGRAM_BOT_TOKEN`, `OPERATOR_DATABASE_URL`, plus one model provider credential. |
+| 4. Safe defaults | `PI_MODEL=anthropic/claude-sonnet-4-5`, Telegram streaming and Business automation enabled, `DD_SITE=datadoghq.com`. Set `PORT` for `/app`. | Use the same environment values as Render if the template does not prefill them. | Uses the same defaults as Render. |
 | 5. Persistent state | The Blueprint creates a 1 GB disk mounted at `/data`. | The template creates a volume mounted at `/data`. | App Platform local filesystem state is ephemeral. Use an external state backend or choose Render/Railway for durable `/data` state. |
 | 6. Start chatting | After deploy succeeds, message your Telegram bot. | After deploy succeeds, message your Telegram bot. | After deploy succeeds and secrets are replaced, message your Telegram bot. |
 
 Render storage is declared in `render.yaml`. Railway volumes are configured in the Railway template composer, not `railway.json`. DigitalOcean's deploy button uses `.do/deploy.template.yaml`; App Platform does not provide persistent volumes.
 
 ## Run Locally
+
+### Docker Compose
+
+The easiest local stack is Docker Compose. It starts Postgres and the app together.
+
+Create local config:
+
+```bash
+cp .env.example .env
+```
+
+Set at least:
+
+```bash
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_BOT_USERNAME=your_bot_username_without_at
+OPERATOR_CONTROL_PANEL_TOKEN=dev-token
+```
+
+Then configure one model provider, for example Anthropic:
+
+```bash
+ANTHROPIC_API_KEY=...
+```
+
+Or OpenRouter:
+
+```bash
+PI_PROVIDER=openrouter
+OPENROUTER_API_KEY=...
+OPENROUTER_MODEL=google/gemini-3.1-flash-lite
+```
+
+Then run:
+
+```bash
+docker compose up --build
+```
+
+By default Compose exposes:
+
+- app and Mini App: `http://localhost:3000`
+- Postgres on the host: `postgresql://operator:operator@localhost:55432/operator`
+- Postgres inside Compose: `postgresql://operator:operator@postgres:5432/operator`
+
+Quick checks:
+
+```bash
+curl http://localhost:3000/healthz
+curl 'http://localhost:3000/api/install-link?token=dev-token'
+psql postgresql://operator:operator@localhost:55432/operator -c '\dt operator.*'
+```
+
+Open the control panel at:
+
+```txt
+http://localhost:3000/app?token=dev-token
+```
+
+To run only Postgres:
+
+```bash
+docker compose up postgres
+```
+
+### Native Bun
 
 Install dependencies:
 
@@ -103,20 +251,21 @@ Set at least:
 
 ```bash
 TELEGRAM_BOT_TOKEN=...
-ANTHROPIC_API_KEY=...
-DATABASE_URL=...
-DD_API_KEY=...
-DD_APP_KEY=...
-DD_SITE=datadoghq.com
+TELEGRAM_BOT_USERNAME=your_bot_username_without_at
+OPERATOR_DATABASE_URL=postgresql://operator:operator@localhost:55432/operator
+OPERATOR_CONTROL_PANEL_TOKEN=dev-token
+PORT=3000
 ```
 
-Runtime Telegram sessions, run lifecycle records, and audit events are stored in SQLite. By default local runs use:
+Then configure Anthropic, OpenRouter, or OpenAI Codex as shown below.
+
+`DATABASE_URL` is only needed for the local Postgres MCP package. `DD_API_KEY`, `DD_APP_KEY`, and `DD_SITE` are only needed if the Datadog MCP package is enabled.
+
+Runtime state is mirrored into Postgres when `OPERATOR_DATABASE_URL` is set. SQLite remains as a local compatibility store. By default local SQLite uses:
 
 ```bash
 OPERATOR_STATE_DB_PATH=./.operator/state/operator.sqlite
 ```
-
-Use a persistent volume path for deployments.
 
 To import an old `logs/audit-log.json` file into SQLite:
 

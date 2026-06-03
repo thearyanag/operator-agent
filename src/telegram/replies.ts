@@ -11,6 +11,8 @@ import type {
 import { sendQueuedTelegramAttachments } from "./attachments";
 import { toTelegramMethodOptions } from "./api-options";
 
+const GROUP_STREAM_INTERVAL_MS = 500;
+
 export interface TelegramReplySink {
   start(): Promise<void>;
   handleProgress(update: PiProgressUpdate): void;
@@ -31,6 +33,10 @@ export function createTelegramReplySink(
     Number.isSafeInteger(runContext.chatId)
   ) {
     return new PrivateDraftReplySink(ctx, runContext.chatId, buildDraftId(ctx.update.update_id), appConfig);
+  }
+
+  if (runContext.surface === "group") {
+    return new GroupStreamingReplySink(ctx, appConfig);
   }
 
   return new EditableProgressReplySink(ctx, appConfig);
@@ -90,6 +96,107 @@ export class EditableProgressReplySink implements TelegramReplySink {
 export class BusinessReplySink extends EditableProgressReplySink {
   constructor(ctx: Context, businessConnectionId: string, appConfig: AppConfig) {
     super(ctx, appConfig, { businessConnectionId });
+  }
+}
+
+export class GroupStreamingReplySink implements TelegramReplySink {
+  private stopTyping: (() => void) | undefined;
+  private streamMessageId: number | undefined;
+  private latestAnswerText = "";
+  private renderedAnswerText = "";
+  private renderTimer: ReturnType<typeof setTimeout> | undefined;
+  private renderChain = Promise.resolve();
+  private stopped = false;
+
+  constructor(
+    private readonly ctx: Context,
+    private readonly appConfig: AppConfig,
+  ) {}
+
+  async start(): Promise<void> {
+    this.stopTyping = startTypingLoop(this.ctx, this.appConfig);
+    try {
+      await this.ctx.react("👍");
+    } catch (error) {
+      console.warn("Failed to acknowledge Telegram group message with reaction:", error);
+    }
+  }
+
+  handleProgress(update: PiProgressUpdate): void {
+    if (this.stopped || update.type !== "answer") return;
+    this.latestAnswerText = clipGroupStreamingText(update.text);
+    this.scheduleRender();
+  }
+
+  async stop(): Promise<void> {
+    this.stopped = true;
+    this.stopTyping?.();
+    this.stopTyping = undefined;
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = undefined;
+    }
+    await this.renderChain.catch(() => undefined);
+  }
+
+  async sendFinal(text: string): Promise<ReplyRenderResult> {
+    return replyRenderedResponse(this.ctx, text, {
+      replaceMessageId: this.streamMessageId,
+    });
+  }
+
+  async sendAttachments(attachments: TelegramQueuedAttachment[]): Promise<void> {
+    await sendQueuedTelegramAttachments(this.ctx, attachments);
+  }
+
+  async sendError(text: string): Promise<void> {
+    if (this.streamMessageId !== undefined) {
+      await replyRenderedResponse(this.ctx, text, {
+        replaceMessageId: this.streamMessageId,
+      });
+      return;
+    }
+
+    await sendPlainTelegramMessage(this.ctx, text);
+  }
+
+  private scheduleRender(): void {
+    if (this.renderTimer || this.stopped || this.latestAnswerText === this.renderedAnswerText) return;
+
+    this.renderTimer = setTimeout(() => {
+      this.renderTimer = undefined;
+      void this.renderNow();
+    }, GROUP_STREAM_INTERVAL_MS);
+  }
+
+  private async renderNow(): Promise<void> {
+    const text = this.latestAnswerText;
+    if (!text || text === this.renderedAnswerText) return;
+
+    this.renderChain = this.renderChain
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          if (this.streamMessageId === undefined) {
+            const message = await this.ctx.reply(text, {
+              link_preview_options: { is_disabled: true },
+            });
+            this.streamMessageId = message.message_id;
+          } else {
+            const chatId = this.ctx.chat?.id;
+            if (chatId === undefined) return;
+
+            await this.ctx.api.editMessageText(chatId, this.streamMessageId, text, {
+              link_preview_options: { is_disabled: true },
+            });
+          }
+          this.renderedAnswerText = text;
+        } catch (error) {
+          console.warn("Failed to stream Telegram group answer update:", error);
+        }
+      });
+
+    await this.renderChain;
   }
 }
 
@@ -320,6 +427,13 @@ function buildDraftId(updateId: number): number {
 }
 
 function clipTelegramDraftText(text: string, maxLength = 4000): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  if (trimmed.length <= maxLength) return trimmed;
+  return `...\n${trimmed.slice(-(maxLength - 4))}`;
+}
+
+function clipGroupStreamingText(text: string, maxLength = 3500): string {
   const trimmed = text.trim();
   if (!trimmed) return "";
   if (trimmed.length <= maxLength) return trimmed;

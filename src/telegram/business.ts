@@ -1,4 +1,5 @@
 import type { Context } from "grammy";
+import type { OperatorStore } from "../operator/store";
 import type { OperatorStateDb } from "../state/operator-db";
 
 export type TelegramBusinessConnection = NonNullable<Context["businessConnection"]>;
@@ -20,7 +21,10 @@ export type BusinessConnectionState = {
 export class BusinessConnectionStore {
   private readonly connections = new Map<string, BusinessConnectionState>();
 
-  constructor(private readonly stateDb?: OperatorStateDb) {}
+  constructor(
+    private readonly stateDb?: OperatorStateDb,
+    private readonly operatorStore?: OperatorStore,
+  ) {}
 
   get(id: string): BusinessConnectionState | undefined {
     const cached = this.connections.get(id);
@@ -53,6 +57,18 @@ export class BusinessConnectionStore {
       rightsJson: JSON.stringify(state.rights ?? {}),
       updatedAt: Date.parse(state.updatedAt),
       lastCheckedAt: Date.now(),
+    });
+    void this.operatorStore?.upsertTelegramBusinessConnection({
+      id: state.id,
+      ownerTelegramUserId: state.ownerTelegramUserId,
+      ownerPrivateChatId: state.ownerPrivateChatId,
+      isEnabled: state.isEnabled,
+      canReply: canReplyAsBusinessAccount(state),
+      rights: state.rights ?? {},
+      updatedAt: new Date(state.updatedAt),
+      lastCheckedAt: new Date(),
+    }).catch((error) => {
+      console.warn(`Failed to persist Telegram Business connection ${state.id} to Operator Postgres:`, error);
     });
     return state;
   }

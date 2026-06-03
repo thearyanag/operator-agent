@@ -62,6 +62,18 @@ export type TelegramRunContext = {
   dryRun?: boolean;
 };
 
+export type OperatorToolContext = {
+  surface: TelegramSurface;
+  sessionKey: string;
+  runId: string;
+  ownerUserId: string;
+  ownerTelegramUserIds: Set<number>;
+  requesterTelegramUserId?: number;
+  currentConversationId?: string;
+  currentConversationTitle?: string;
+  currentTelegramChatId?: string;
+};
+
 export type TelegramAttachmentKind =
   | "auto"
   | "document"
@@ -156,6 +168,7 @@ export type EmptyPiResponseContext = {
 
 export type AppConfig = {
   telegramBotToken: string;
+  telegramBotUsername?: string;
   allowedUserIds: Set<number>;
   allowedGroupId: number | null;
   enableTelegramNativeStreaming: boolean;
@@ -172,7 +185,12 @@ export type AppConfig = {
   piSystemPromptPath: string;
   piSessionDir: string;
   telegramAttachmentRoots: string[];
+  operatorDatabaseUrl?: string;
+  operatorOwnerId: string;
+  operatorOwnerTelegramIds: Set<number>;
   operatorStateDbPath: string;
+  operatorContextDir: string;
+  operatorControlPanelToken?: string;
   telegramTypingIntervalMs: number;
   telegramMaxDocumentBytes: number;
   telegramDraftIntervalMs: number;

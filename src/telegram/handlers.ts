@@ -1,17 +1,34 @@
 import { randomUUID } from "node:crypto";
 import { Bot, type Context } from "grammy";
+import type { InlineKeyboardMarkup } from "grammy/types";
 import type { AuditLogger } from "../audit";
 import { serializeError } from "../audit";
+import {
+  createTelegramContextArtifact,
+  withTelegramContextPrompt,
+  type TelegramContextArtifact,
+} from "../operator/context-artifact";
+import {
+  buildPersonalDigestOutput,
+  buildPersonalDraftPrompt,
+  evaluateOperatorPolicy,
+} from "../operator/policy";
+import type { OperatorEnvelope, OperatorStore } from "../operator/store";
+import {
+  recordBusinessTelegramObservation,
+  recordStandardTelegramObservation,
+} from "../operator/telegram-normalizer";
 import type { PiBridge } from "../pi/bridge";
 import type { OperatorStateDb } from "../state/operator-db";
 import type {
   AppConfig,
+  OperatorToolContext,
   TelegramBusinessMessage,
   TelegramDeletedBusinessMessages,
   TelegramEditedBusinessMessage,
   TelegramRunContext,
 } from "../types";
-import { canUsePrivateDm, isAllowedGroupChat, isSupportedChat, replyUnauthorized } from "./access";
+import { canUsePrivateDm, isSupportedChat, isTeamGroupChat, replyUnauthorized } from "./access";
 import {
   BusinessConnectionStore,
   canReplyAsBusinessAccount,
@@ -24,10 +41,8 @@ import {
   getBusinessAuditContext,
 } from "./context";
 import {
-  BusinessReplySink,
   createTelegramReplySink,
   formatPiError,
-  NoopReplySink,
   type TelegramReplySink,
 } from "./replies";
 
@@ -36,10 +51,11 @@ type TelegramHandlerDeps = {
   auditLogger: AuditLogger;
   piBridge: PiBridge;
   stateDb: OperatorStateDb;
+  operatorStore?: OperatorStore;
 };
 
 export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlerDeps): void {
-  const businessConnections = new BusinessConnectionStore(deps.stateDb);
+  const businessConnections = new BusinessConnectionStore(deps.stateDb, deps.operatorStore);
 
   bot.catch((error) => {
     console.error("Telegram bot error:", error.error);
@@ -57,8 +73,8 @@ export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlerDeps): v
   bot.command("start", async (ctx) => {
     if (ctx.from?.is_bot) return;
 
-    if (isAllowedGroupChat(ctx, deps.appConfig)) {
-      await ctx.reply("Bot is ready. Send a message and I'll forward it to pi.");
+    if (isTeamGroupChat(ctx, deps.appConfig)) {
+      await ctx.reply("Operator is watching this group. Tag me when you want a reply.");
       return;
     }
 
@@ -91,7 +107,7 @@ export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlerDeps): v
       text,
     });
 
-    const canUseBot = isAllowedGroupChat(ctx, deps.appConfig)
+    const canUseBot = isTeamGroupChat(ctx, deps.appConfig)
       ? true
       : ctx.chat?.type === "private" && (await canUsePrivateDm(ctx, deps.appConfig));
 
@@ -105,7 +121,27 @@ export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlerDeps): v
       return;
     }
 
-    if (await handleOperatorCommand(ctx, runContext, text, deps)) {
+    const operatorEnvelope = await recordOperatorEnvelopeForStandardMessage(ctx, runContext, text, deps);
+
+    if (await handleOperatorCommand(ctx, runContext, text, deps, operatorEnvelope)) {
+      return;
+    }
+
+    const runtimePolicy = operatorEnvelope?.policyDecision ?? evaluateOperatorPolicy({
+      conversation: {
+        mode: runContext.surface === "private" ? "assistant" : "team",
+        status: "active",
+      },
+      observationText: text,
+      runContext,
+      ctx,
+      botUsername: deps.appConfig.telegramBotUsername,
+    });
+
+    if (!runtimePolicy.shouldInvokeAgent) {
+      if (operatorEnvelope) {
+        await maybeRecordObservedOutput(operatorEnvelope, text, deps);
+      }
       return;
     }
 
@@ -114,6 +150,7 @@ export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlerDeps): v
       withActiveInvestigationPrompt(runContext, deps),
       createTelegramReplySink(ctx, runContext, deps.appConfig),
       deps,
+      operatorEnvelope,
     );
   });
 
@@ -152,34 +189,396 @@ export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlerDeps): v
   });
 }
 
+async function recordOperatorEnvelopeForStandardMessage(
+  ctx: Context,
+  runContext: TelegramRunContext,
+  text: string,
+  deps: TelegramHandlerDeps,
+): Promise<OperatorEnvelope | undefined> {
+  if (!deps.operatorStore) return undefined;
+
+  try {
+    const { conversation, observation } = await recordStandardTelegramObservation({
+      store: deps.operatorStore,
+      appConfig: deps.appConfig,
+      ctx,
+      runContext,
+      text,
+    });
+    const policyContext = await loadOperatorPolicyContext(deps, conversation.id);
+    const policy = evaluateOperatorPolicy({
+      conversation,
+      observationText: text,
+      runContext,
+      ctx,
+      botUsername: deps.appConfig.telegramBotUsername,
+      ...policyContext,
+    });
+    const policyDecision = await deps.operatorStore.insertPolicyDecision({
+      conversationId: conversation.id,
+      observationId: observation.id,
+      action: policy.action,
+      reason: policy.reason,
+      confidence: policy.confidence,
+      shouldInvokeAgent: policy.shouldInvokeAgent,
+    });
+    return { conversation, observation, policyDecision };
+  } catch (error) {
+    console.warn("Failed to record Operator conversation observation:", error);
+    return undefined;
+  }
+}
+
+async function maybeRecordObservedOutput(
+  envelope: OperatorEnvelope,
+  text: string,
+  deps: TelegramHandlerDeps,
+): Promise<void> {
+  if (!deps.operatorStore) return;
+
+  if (envelope.policyDecision.action === "observe") {
+    return;
+  }
+
+  if (envelope.policyDecision.action === "summarize") {
+    await deps.operatorStore.insertOutput({
+      conversationId: envelope.conversation.id,
+      observationId: envelope.observation.id,
+      type: "digest_item",
+      status: "pending",
+      payload: {
+        title: envelope.conversation.title ?? "Telegram update",
+        summary: text.slice(0, 500),
+        priority: "normal",
+      },
+    }).catch((error) => {
+      console.warn("Failed to insert digest output:", error);
+    });
+  }
+}
+
+async function recordOperatorEnvelopeForBusinessMessage(
+  message: TelegramBusinessMessage,
+  connection: BusinessConnectionState,
+  runContext: TelegramRunContext,
+  text: string,
+  deps: TelegramHandlerDeps,
+  policyOverride?: ReturnType<typeof evaluateOperatorPolicy>,
+): Promise<OperatorEnvelope | undefined> {
+  if (!deps.operatorStore) return undefined;
+
+  try {
+    const { conversation, observation } = await recordBusinessTelegramObservation({
+      store: deps.operatorStore,
+      appConfig: deps.appConfig,
+      message,
+      connection,
+      text,
+    });
+    const policyContext = policyOverride
+      ? {}
+      : await loadOperatorPolicyContext(deps, conversation.id);
+    const policy = policyOverride ?? evaluateOperatorPolicy({
+      conversation,
+      observationText: text,
+      runContext,
+      ...policyContext,
+    });
+    const policyDecision = await deps.operatorStore.insertPolicyDecision({
+      conversationId: conversation.id,
+      observationId: observation.id,
+      action: policy.action,
+      reason: policy.reason,
+      confidence: policy.confidence,
+      shouldInvokeAgent: policy.shouldInvokeAgent,
+    });
+    return { conversation, observation, policyDecision };
+  } catch (error) {
+    console.warn("Failed to record Operator business observation:", error);
+    return undefined;
+  }
+}
+
+async function processPersonalDraft(
+  ctx: Context,
+  runContext: TelegramRunContext,
+  envelope: OperatorEnvelope,
+  connection: BusinessConnectionState,
+  deps: TelegramHandlerDeps,
+): Promise<void> {
+  if (!deps.operatorStore) return;
+
+  const runId = randomUUID();
+  const prompt = buildPersonalDraftPrompt({
+    observation: envelope.observation,
+    runContext,
+  });
+  await deps.operatorStore.startAgentRun({
+    id: runId,
+    conversationId: envelope.conversation.id,
+    observationId: envelope.observation.id,
+    mode: "personal",
+    prompt,
+  });
+
+  let draftText: string;
+  try {
+    const result = await deps.piBridge.prompt(runContext.sessionKey, prompt, {
+      operatorToolContext: buildOperatorToolContext(runId, runContext, deps, envelope),
+    });
+    draftText = result.text;
+    await deps.operatorStore.completeAgentRun(runId, draftText);
+  } catch (error) {
+    const serialized = serializeError(error);
+    await deps.operatorStore.failAgentRun(runId, serialized);
+    await deps.auditLogger.log({
+      ...getAuditContextForRun(runContext),
+      runId,
+      event: "personal_draft_failed",
+      error: serialized,
+    });
+    return;
+  }
+
+  const output = await deps.operatorStore.insertOutput({
+    conversationId: envelope.conversation.id,
+    observationId: envelope.observation.id,
+    agentRunId: runId,
+    type: "draft",
+    status: "pending",
+    payload: {
+      draft: draftText,
+      sourceText: envelope.observation.text,
+      sourceConversationTitle: envelope.conversation.title,
+      sourceSender: envelope.observation.senderDisplayName,
+    },
+  });
+
+  await deps.operatorStore.insertOutput({
+    conversationId: envelope.conversation.id,
+    observationId: envelope.observation.id,
+    type: "digest_item",
+    status: "pending",
+    payload: buildPersonalDigestOutput({
+      observation: envelope.observation,
+      runContext,
+    }),
+  });
+
+  if (deps.appConfig.telegramBusinessDryRun) {
+    return;
+  }
+
+  try {
+    await ctx.api.sendMessage(
+      connection.ownerPrivateChatId,
+      [
+        "Draft reply",
+        envelope.conversation.title ? `Chat: ${envelope.conversation.title}` : undefined,
+        envelope.observation.senderDisplayName ? `From: ${envelope.observation.senderDisplayName}` : undefined,
+        "",
+        draftText,
+      ].filter(Boolean).join("\n"),
+      {
+        link_preview_options: { is_disabled: true },
+        reply_markup: buildPersonalDraftReplyMarkup(envelope, draftText),
+      },
+    );
+    await deps.operatorStore.markOutputDelivered(output.id);
+  } catch (error) {
+    const serialized = serializeError(error);
+    await deps.operatorStore.markOutputFailed(output.id, serialized);
+    console.warn("Failed to deliver personal draft to owner DM:", error);
+  }
+}
+
+async function loadOperatorPolicyContext(
+  deps: TelegramHandlerDeps,
+  conversationId: string,
+) {
+  if (!deps.operatorStore) return {};
+
+  const [conversationPolicy, ownerSettings] = await Promise.all([
+    deps.operatorStore.getConversationPolicy(conversationId).catch((error) => {
+      console.warn("Failed to load Operator conversation policy:", error);
+      return undefined;
+    }),
+    deps.operatorStore.getOwnerSettings(deps.appConfig.operatorOwnerId).catch((error) => {
+      console.warn("Failed to load Operator owner settings:", error);
+      return undefined;
+    }),
+  ]);
+
+  return { conversationPolicy, ownerSettings };
+}
+
+function buildPersonalDraftReplyMarkup(
+  envelope: OperatorEnvelope,
+  draftText: string,
+): InlineKeyboardMarkup {
+  const inlineKeyboard: InlineKeyboardMarkup["inline_keyboard"] = [];
+  const draftLink = buildTelegramDraftDeepLink(envelope, draftText);
+
+  if (draftLink) {
+    inlineKeyboard.push([
+      {
+        text: "Open chat with draft",
+        url: draftLink,
+      },
+    ]);
+  }
+
+  inlineKeyboard.push([
+    {
+      text: "Copy draft",
+      copy_text: {
+        text: draftText,
+      },
+    },
+  ]);
+
+  return { inline_keyboard: inlineKeyboard };
+}
+
+function buildTelegramDraftDeepLink(envelope: OperatorEnvelope, draftText: string): string | undefined {
+  const username = getBusinessSenderUsername(envelope.observation.rawPayload);
+  if (!username) return undefined;
+
+  const text = normalizeTelegramDeepLinkDraftText(draftText);
+  if (!text) return undefined;
+
+  return `https://t.me/${username}?text=${encodeURIComponent(text)}`;
+}
+
+function getBusinessSenderUsername(rawPayload: unknown): string | undefined {
+  if (!isRecord(rawPayload)) return undefined;
+  const from = rawPayload.from;
+  if (!isRecord(from)) return undefined;
+  const username = typeof from.username === "string" ? from.username.trim().replace(/^@/, "") : "";
+  if (!/^[A-Za-z0-9_]{5,32}$/.test(username)) return undefined;
+  return username;
+}
+
+function normalizeTelegramDeepLinkDraftText(text: string, maxLength = 900): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  const safeText = trimmed.startsWith("@") ? ` ${trimmed}` : trimmed;
+  return safeText.length <= maxLength ? safeText : safeText.slice(0, maxLength).trimEnd();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function maybeCreateTelegramContextArtifact(
+  runId: string,
+  runContext: TelegramRunContext,
+  deps: TelegramHandlerDeps,
+  operatorEnvelope?: OperatorEnvelope,
+): Promise<TelegramContextArtifact | undefined> {
+  if (!deps.operatorStore || !operatorEnvelope) return undefined;
+
+  try {
+    return await createTelegramContextArtifact({
+      appConfig: deps.appConfig,
+      store: deps.operatorStore,
+      envelope: operatorEnvelope,
+      runContext,
+      runId,
+    });
+  } catch (error) {
+    console.warn("Failed to create Operator Telegram context artifact:", error);
+    return undefined;
+  }
+}
+
+function buildOperatorToolContext(
+  runId: string,
+  runContext: TelegramRunContext,
+  deps: TelegramHandlerDeps,
+  operatorEnvelope?: OperatorEnvelope,
+): OperatorToolContext {
+  return {
+    surface: runContext.surface,
+    sessionKey: runContext.sessionKey,
+    runId,
+    ownerUserId: deps.appConfig.operatorOwnerId,
+    ownerTelegramUserIds: deps.appConfig.operatorOwnerTelegramIds,
+    requesterTelegramUserId: runContext.surface === "business"
+      ? runContext.businessOwnerUserId
+      : runContext.userId,
+    currentConversationId: operatorEnvelope?.conversation.id,
+    currentConversationTitle: operatorEnvelope?.conversation.title ?? runContext.chatTitle,
+    currentTelegramChatId: operatorEnvelope?.conversation.telegramChatId ?? String(runContext.chatId),
+  };
+}
+
 async function processTelegramRun(
   ctx: Context,
   runContext: TelegramRunContext,
   sink: TelegramReplySink,
   deps: TelegramHandlerDeps,
+  operatorEnvelope?: OperatorEnvelope,
 ): Promise<void> {
   const runId = randomUUID();
   const auditContext = { ...getAuditContextForRun(runContext), runId };
   const promptStartedAt = Date.now();
 
   try {
-    upsertTelegramSessionFromContext(runContext, deps, promptStartedAt);
+    const contextArtifact = await maybeCreateTelegramContextArtifact(runId, runContext, deps, operatorEnvelope);
+    const effectivePrompt = contextArtifact
+      ? withTelegramContextPrompt(runContext.prompt, contextArtifact)
+      : runContext.prompt;
+
+    upsertTelegramSessionFromContext(runContext, deps, promptStartedAt, runId);
     deps.stateDb.startRun({
       id: runId,
       sessionKey: runContext.sessionKey,
-      prompt: runContext.prompt,
+      prompt: effectivePrompt,
       startedAt: promptStartedAt,
     });
+    if (deps.operatorStore && operatorEnvelope) {
+      await deps.operatorStore.startAgentRun({
+        id: runId,
+        conversationId: operatorEnvelope.conversation.id,
+        observationId: operatorEnvelope.observation.id,
+        mode: operatorEnvelope.conversation.mode,
+        prompt: effectivePrompt,
+      }).catch((error) => {
+        console.warn("Failed to start Operator Postgres agent run:", error);
+      });
+      if (contextArtifact) {
+        await deps.operatorStore.insertOutput({
+          conversationId: operatorEnvelope.conversation.id,
+          observationId: operatorEnvelope.observation.id,
+          agentRunId: runId,
+          type: "artifact",
+          status: "pending",
+          payload: {
+            kind: "telegram_context",
+            path: contextArtifact.path,
+            messageCount: contextArtifact.messageCount,
+            previewCount: contextArtifact.previewCount,
+            window: contextArtifact.window,
+            windowStartAt: contextArtifact.windowStartAt?.toISOString() ?? null,
+            windowEndAt: contextArtifact.windowEndAt?.toISOString() ?? null,
+          },
+        }).catch((error) => {
+          console.warn("Failed to insert Operator context artifact output:", error);
+        });
+      }
+    }
 
     await deps.auditLogger.log({
       ...auditContext,
       event: "pi_prompt_started",
-      prompt: runContext.prompt,
+      prompt: effectivePrompt,
     });
 
     await sink.start();
-    const result = await deps.piBridge.prompt(runContext.sessionKey, runContext.prompt, {
+    const result = await deps.piBridge.prompt(runContext.sessionKey, effectivePrompt, {
       onProgress: (update) => sink.handleProgress(update),
+      operatorToolContext: buildOperatorToolContext(runId, runContext, deps, operatorEnvelope),
     });
     const promptCompletedAt = Date.now();
     const durationMs = promptCompletedAt - promptStartedAt;
@@ -191,6 +590,26 @@ async function processTelegramRun(
       durationMs,
       attachmentCount: result.attachments.length,
     });
+    await deps.operatorStore?.completeAgentRun(runId, result.text, new Date(promptCompletedAt)).catch((error) => {
+      console.warn("Failed to complete Operator Postgres agent run:", error);
+    });
+    const replyOutput = deps.operatorStore && operatorEnvelope
+      ? await deps.operatorStore.insertOutput({
+          conversationId: operatorEnvelope.conversation.id,
+          observationId: operatorEnvelope.observation.id,
+          agentRunId: runId,
+          type: "reply",
+          status: runContext.dryRun ? "suppressed" : "pending",
+          payload: {
+            text: result.text,
+            attachmentCount: result.attachments.length,
+            surface: runContext.surface,
+          },
+        }).catch((error) => {
+          console.warn("Failed to insert Operator reply output:", error);
+          return undefined;
+        })
+      : undefined;
     recordCaseRunEvent(runId, runContext, result.text, result.attachments.length, deps, promptCompletedAt);
 
     await deps.auditLogger.log({
@@ -216,6 +635,11 @@ async function processTelegramRun(
     }
 
     const replyResult = await sink.sendFinal(result.text);
+    if (replyOutput) {
+      await deps.operatorStore?.markOutputDelivered(replyOutput.id).catch((error) => {
+        console.warn("Failed to mark Operator reply output delivered:", error);
+      });
+    }
 
     let attachmentSendError: unknown;
     try {
@@ -246,6 +670,9 @@ async function processTelegramRun(
       error: serializedError,
       completedAt: failedAt,
       durationMs: failedAt - promptStartedAt,
+    });
+    await deps.operatorStore?.failAgentRun(runId, serializedError, new Date(failedAt)).catch((storeError) => {
+      console.warn("Failed to fail Operator Postgres agent run:", storeError);
     });
     await deps.auditLogger.log({
       ...auditContext,
@@ -371,15 +798,6 @@ async function handleBusinessMessage(
     return;
   }
 
-  if (!canBusinessOwnerUseAutomation(connection.ownerTelegramUserId, deps.appConfig)) {
-    await deps.auditLogger.log({
-      ...auditContext,
-      event: "business_message_rejected",
-      error: "business owner not allowed by server config",
-    });
-    return;
-  }
-
   if (!canReplyAsBusinessAccount(connection)) {
     await deps.auditLogger.log({
       ...auditContext,
@@ -389,17 +807,58 @@ async function handleBusinessMessage(
     return;
   }
 
+  if (!canBusinessOwnerUseAutomation(connection.ownerTelegramUserId, deps.appConfig)) {
+    await deps.auditLogger.log({
+      ...auditContext,
+      event: "business_message_rejected",
+      error: "business owner not allowed by server config",
+    });
+    return;
+  }
+
   const runContext = buildBusinessRunContext(message, text, connection, {
     dryRun: deps.appConfig.telegramBusinessDryRun,
   });
-  await processTelegramRun(
-    ctx,
+  const isOwnerAuthored = isBusinessMessageFromOwner(message, connection);
+  const operatorEnvelope = await recordOperatorEnvelopeForBusinessMessage(
+    message,
+    connection,
     runContext,
-    deps.appConfig.telegramBusinessDryRun
-      ? new NoopReplySink()
-      : new BusinessReplySink(ctx, businessConnectionId, deps.appConfig),
+    text,
     deps,
+    isOwnerAuthored
+      ? {
+          action: "observe",
+          reason: "owner-authored business message",
+          confidence: 1,
+          shouldInvokeAgent: false,
+        }
+      : undefined,
   );
+  if (!operatorEnvelope) {
+    await deps.auditLogger.log({
+      ...auditContext,
+      event: "business_message_rejected",
+      error: "operator observation unavailable",
+    });
+    return;
+  }
+
+  if (isOwnerAuthored) {
+    await deps.auditLogger.log({
+      ...auditContext,
+      event: "business_message_observed",
+      response: "owner-authored business message",
+    });
+    return;
+  }
+
+  if (!operatorEnvelope.policyDecision.shouldInvokeAgent) {
+    await maybeRecordObservedOutput(operatorEnvelope, text, deps);
+    return;
+  }
+
+  await processPersonalDraft(ctx, runContext, operatorEnvelope, connection, deps);
 }
 
 async function handleOperatorCommand(
@@ -407,6 +866,7 @@ async function handleOperatorCommand(
   runContext: TelegramRunContext,
   text: string,
   deps: TelegramHandlerDeps,
+  operatorEnvelope?: OperatorEnvelope,
 ): Promise<boolean> {
   const [commandWithSuffix = "", ...args] = text.trim().split(/\s+/);
   const command = commandWithSuffix.split("@")[0]?.toLowerCase();
@@ -440,6 +900,7 @@ async function handleOperatorCommand(
         },
         createTelegramReplySink(ctx, runContext, deps.appConfig),
         deps,
+        operatorEnvelope,
       );
       return true;
     case "/timeline": {
@@ -456,6 +917,7 @@ async function handleOperatorCommand(
         },
         createTelegramReplySink(ctx, runContext, deps.appConfig),
         deps,
+        operatorEnvelope,
       );
       return true;
     }
@@ -473,6 +935,7 @@ async function handleOperatorCommand(
         },
         createTelegramReplySink(ctx, runContext, deps.appConfig),
         deps,
+        operatorEnvelope,
       );
       return true;
     }
@@ -494,6 +957,7 @@ function upsertTelegramSessionFromContext(
   runContext: TelegramRunContext,
   deps: TelegramHandlerDeps,
   updatedAt: number,
+  lastRunId?: string,
 ): void {
   deps.stateDb.upsertTelegramSession({
     sessionKey: runContext.sessionKey,
@@ -505,6 +969,21 @@ function upsertTelegramSessionFromContext(
     username: runContext.username,
     businessConnectionId: runContext.businessConnectionId,
     updatedAt,
+  });
+  void deps.operatorStore?.upsertTelegramSession({
+    ownerUserId: deps.appConfig.operatorOwnerId,
+    sessionKey: runContext.sessionKey,
+    surface: runContext.surface,
+    chatId: runContext.chatId,
+    chatType: runContext.chatType,
+    chatTitle: runContext.chatTitle,
+    userId: runContext.userId,
+    username: runContext.username,
+    businessConnectionId: runContext.businessConnectionId,
+    lastRunId,
+    updatedAt: new Date(updatedAt),
+  }).catch((error) => {
+    console.warn(`Failed to persist Telegram session ${runContext.sessionKey} to Operator Postgres:`, error);
   });
 }
 
@@ -681,4 +1160,11 @@ function canBusinessOwnerUseAutomation(ownerTelegramUserId: number, appConfig: A
     appConfig.telegramBusinessAllowedOwnerIds.size === 0 ||
     appConfig.telegramBusinessAllowedOwnerIds.has(ownerTelegramUserId)
   );
+}
+
+export function isBusinessMessageFromOwner(
+  message: Pick<TelegramBusinessMessage, "from">,
+  connection: Pick<BusinessConnectionState, "ownerTelegramUserId">,
+): boolean {
+  return message.from?.id === connection.ownerTelegramUserId;
 }

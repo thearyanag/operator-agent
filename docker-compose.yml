@@ -1,0 +1,69 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-operator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-operator}
+      POSTGRES_DB: ${POSTGRES_DB:-operator}
+    ports:
+      - "${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - operator-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-operator} -d ${POSTGRES_DB:-operator}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    volumes:
+      - operator-app-data:/data
+    environment:
+      PORT: ${PORT:-3000}
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}"
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      ALLOWED_USER_IDS: ${ALLOWED_USER_IDS:-}
+      ALLOWED_GROUP_ID: ${ALLOWED_GROUP_ID:-}
+      ENABLE_TELEGRAM_NATIVE_STREAMING: ${ENABLE_TELEGRAM_NATIVE_STREAMING:-true}
+      ENABLE_TELEGRAM_BUSINESS_AUTOMATION: ${ENABLE_TELEGRAM_BUSINESS_AUTOMATION:-true}
+      TELEGRAM_BUSINESS_ALLOWED_OWNER_IDS: ${TELEGRAM_BUSINESS_ALLOWED_OWNER_IDS:-}
+      TELEGRAM_BUSINESS_DRY_RUN: ${TELEGRAM_BUSINESS_DRY_RUN:-false}
+      OPERATOR_DATABASE_URL: ${OPERATOR_DATABASE_URL:-postgresql://operator:operator@postgres:5432/operator}
+      OPERATOR_OWNER_ID: ${OPERATOR_OWNER_ID:-00000000-0000-4000-8000-000000000001}
+      OPERATOR_OWNER_TELEGRAM_IDS: ${OPERATOR_OWNER_TELEGRAM_IDS:-}
+      OPERATOR_CONTROL_PANEL_TOKEN: ${OPERATOR_CONTROL_PANEL_TOKEN:-dev-token}
+      OPERATOR_STATE_DB_PATH: /data/operator-state/operator.sqlite
+      OPERATOR_CONTEXT_DIR: /app/operator-context
+      PI_PROVIDER: ${PI_PROVIDER:-}
+      PI_MODEL: ${PI_MODEL:-anthropic/claude-sonnet-4-5}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
+      OPENAI_CODEX_MODEL: ${OPENAI_CODEX_MODEL:-}
+      OPENAI_CODEX_ACCESS_TOKEN: ${OPENAI_CODEX_ACCESS_TOKEN:-}
+      OPENAI_CODEX_REFRESH_TOKEN: ${OPENAI_CODEX_REFRESH_TOKEN:-}
+      OPENAI_CODEX_EXPIRES_AT_MS: ${OPENAI_CODEX_EXPIRES_AT_MS:-}
+      OPENAI_CODEX_ACCOUNT_ID: ${OPENAI_CODEX_ACCOUNT_ID:-}
+      OPENAI_CODEX_AUTH_JSON: ${OPENAI_CODEX_AUTH_JSON:-}
+      PI_THINKING_LEVEL: ${PI_THINKING_LEVEL:-}
+      PI_EXTENSION_PATHS: ${PI_EXTENSION_PATHS:-}
+      PI_SYSTEM_PROMPT_PATH: ${PI_SYSTEM_PROMPT_PATH:-prompts/system-prompt.md}
+      TELEGRAM_ATTACHMENT_ROOTS: /data/artifacts,/app/artifacts
+      DATABASE_URL: ${DATABASE_URL:-postgresql://operator:operator@postgres:5432/operator}
+      DD_API_KEY: ${DD_API_KEY:-}
+      DD_APP_KEY: ${DD_APP_KEY:-}
+      DD_SITE: ${DD_SITE:-datadoghq.com}
+
+volumes:
+  operator-postgres-data:
+  operator-app-data:

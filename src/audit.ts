@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
+import type { OperatorStore } from "./operator/store";
 import type { OperatorStateDb } from "./state/operator-db";
 import type { AuditLogEntry, SessionMessage } from "./types";
 
 export class AuditLogger {
   private queue = Promise.resolve();
 
-  constructor(private readonly stateDb: OperatorStateDb) {}
+  constructor(
+    private readonly stateDb: OperatorStateDb,
+    private readonly operatorStore?: OperatorStore,
+  ) {}
 
   log(entry: Omit<AuditLogEntry, "id" | "timestamp">): Promise<void> {
     const normalizedEntry: AuditLogEntry = {
@@ -32,6 +36,18 @@ export class AuditLogger {
         messageId: normalizedEntry.messageId,
         surface: normalizedEntry.surface,
         payloadJson: JSON.stringify(normalizedEntry),
+      });
+      await this.operatorStore?.insertAuditEvent({
+        id: normalizedEntry.id,
+        createdAt: new Date(normalizedEntry.timestamp),
+        event: normalizedEntry.event,
+        runId: normalizedEntry.runId,
+        sessionKey: normalizedEntry.sessionKey,
+        chatId: normalizedEntry.chatId,
+        userId: normalizedEntry.userId,
+        messageId: normalizedEntry.messageId,
+        surface: normalizedEntry.surface,
+        payload: normalizedEntry as unknown as Record<string, unknown>,
       });
     });
 

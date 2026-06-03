@@ -2,11 +2,16 @@ import type { Context } from "grammy";
 import type { AppConfig } from "../types";
 
 export function isSupportedChat(ctx: Context, appConfig: AppConfig): boolean {
-  return isAllowedGroupChat(ctx, appConfig) || ctx.chat?.type === "private";
+  return isTeamGroupChat(ctx, appConfig) || ctx.chat?.type === "private";
 }
 
 export function isAllowedGroupChat(ctx: Context, appConfig: AppConfig): boolean {
   return appConfig.allowedGroupId !== null && ctx.chat?.id === appConfig.allowedGroupId;
+}
+
+export function isTeamGroupChat(ctx: Context, appConfig: AppConfig): boolean {
+  if (ctx.chat?.type !== "group" && ctx.chat?.type !== "supergroup") return false;
+  return appConfig.allowedGroupId === null || ctx.chat.id === appConfig.allowedGroupId;
 }
 
 export async function canUsePrivateDm(ctx: Context, appConfig: AppConfig): Promise<boolean> {

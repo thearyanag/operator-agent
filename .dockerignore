@@ -20,6 +20,7 @@ report.*.json
 
 .expect
 .mcp.json
+.operator
 .pi/npm
 .pi/telegram-sessions
 

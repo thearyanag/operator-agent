@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { OperatorStateDb } from "../src/state/operator-db";
 import { BusinessConnectionStore, canReplyAsBusinessAccount } from "../src/telegram/business";
+import { isBusinessMessageFromOwner } from "../src/telegram/handlers";
 
 function makeConnection(overrides: Record<string, unknown> = {}) {
   return {
@@ -59,4 +60,14 @@ test("persists Telegram Business connection state in SQLite", async () => {
   });
 
   stateDb.close();
+});
+
+test("detects owner-authored Telegram Business messages", () => {
+  const ownerConnection = {
+    ownerTelegramUserId: 123,
+  };
+
+  expect(isBusinessMessageFromOwner({ from: { id: 123 } } as any, ownerConnection)).toBe(true);
+  expect(isBusinessMessageFromOwner({ from: { id: 456 } } as any, ownerConnection)).toBe(false);
+  expect(isBusinessMessageFromOwner({} as any, ownerConnection)).toBe(false);
 });

@@ -5,6 +5,7 @@ const TELEGRAM_TYPING_INTERVAL_MS = 4_000;
 const TELEGRAM_MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
 const TELEGRAM_DRAFT_INTERVAL_MS = 650;
 const DEFAULT_PI_MODEL = "anthropic/claude-sonnet-4-5";
+const DEFAULT_OPERATOR_OWNER_ID = "00000000-0000-4000-8000-000000000001";
 
 export const config = loadConfig();
 
@@ -19,6 +20,7 @@ export function loadConfig(env: Record<string, string | undefined> = Bun.env, cw
 
   return {
     telegramBotToken: requireEnv(env, "TELEGRAM_BOT_TOKEN"),
+    telegramBotUsername: parseOptionalString(env.TELEGRAM_BOT_USERNAME),
     allowedUserIds: parseTelegramIdSet(env.ALLOWED_USER_IDS, "ALLOWED_USER_IDS"),
     allowedGroupId: parseOptionalTelegramId(env.ALLOWED_GROUP_ID, "ALLOWED_GROUP_ID"),
     enableTelegramNativeStreaming: parseBooleanEnv(env.ENABLE_TELEGRAM_NATIVE_STREAMING, true),
@@ -46,7 +48,15 @@ export function loadConfig(env: Record<string, string | undefined> = Bun.env, cw
     piSystemPromptPath,
     piSessionDir: env.PI_SESSION_DIR?.trim() || join(cwd, ".pi", "telegram-sessions"),
     telegramAttachmentRoots: parseTelegramAttachmentRoots(env.TELEGRAM_ATTACHMENT_ROOTS, piWorkdir),
+    operatorDatabaseUrl: parseOptionalString(env.OPERATOR_DATABASE_URL),
+    operatorOwnerId: parseOptionalUuid(env.OPERATOR_OWNER_ID, "OPERATOR_OWNER_ID") || DEFAULT_OPERATOR_OWNER_ID,
+    operatorOwnerTelegramIds: parseTelegramIdSet(env.OPERATOR_OWNER_TELEGRAM_IDS, "OPERATOR_OWNER_TELEGRAM_IDS"),
     operatorStateDbPath: env.OPERATOR_STATE_DB_PATH?.trim() || join(cwd, ".operator", "state", "operator.sqlite"),
+    operatorContextDir: resolveOperatorPath(
+      env.OPERATOR_CONTEXT_DIR?.trim() || join(".operator", "context"),
+      cwd,
+    ),
+    operatorControlPanelToken: parseOptionalString(env.OPERATOR_CONTROL_PANEL_TOKEN),
     telegramTypingIntervalMs: TELEGRAM_TYPING_INTERVAL_MS,
     telegramMaxDocumentBytes: TELEGRAM_MAX_DOCUMENT_BYTES,
     telegramDraftIntervalMs: TELEGRAM_DRAFT_INTERVAL_MS,
@@ -68,6 +78,16 @@ export function logStartupConfig(appConfig: AppConfig): void {
   console.log(`pi system prompt: ${appConfig.piSystemPromptPath}`);
   console.log(`pi session dir: ${appConfig.piSessionDir}`);
   console.log(`Telegram attachment roots: ${appConfig.telegramAttachmentRoots.join(", ")}`);
+  console.log(`Operator owner ID: ${appConfig.operatorOwnerId}`);
+  console.log(
+    `Operator owner Telegram IDs: ${
+      appConfig.operatorOwnerTelegramIds.size > 0 ? [...appConfig.operatorOwnerTelegramIds].join(", ") : "not configured"
+    }`,
+  );
+  console.log(`Operator Postgres: ${appConfig.operatorDatabaseUrl ? "configured" : "not configured"}`);
+  console.log(`Operator context dir: ${appConfig.operatorContextDir}`);
+  console.log(`Telegram bot username: ${appConfig.telegramBotUsername ?? "not configured"}`);
+  console.log(`Operator control panel token: ${appConfig.operatorControlPanelToken ? "configured" : "not configured"}`);
   console.log(`Telegram native streaming: ${appConfig.enableTelegramNativeStreaming ? "enabled" : "disabled"}`);
   console.log(`Telegram Business automation: ${appConfig.enableTelegramBusinessAutomation ? "enabled" : "disabled"}`);
 
@@ -114,6 +134,22 @@ function requireEnv(env: Record<string, string | undefined>, name: string): stri
   }
 
   return value;
+}
+
+function parseOptionalString(rawValue: string | undefined): string | undefined {
+  const value = rawValue?.trim();
+  return value ? value : undefined;
+}
+
+function parseOptionalUuid(rawValue: string | undefined, envName: string): string | undefined {
+  const value = rawValue?.trim();
+  if (!value) return undefined;
+
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    throw new Error(`Invalid UUID in ${envName}: ${rawValue}`);
+  }
+
+  return value.toLowerCase();
 }
 
 function parsePiProviderMode(rawValue: string | undefined): PiProviderMode {
@@ -277,6 +313,10 @@ function parseBooleanEnv(rawValue: string | undefined, defaultValue: boolean): b
 
 function resolvePiPath(filePath: string, piWorkdir: string): string {
   return filePath.startsWith("/") ? filePath : join(piWorkdir, filePath);
+}
+
+function resolveOperatorPath(filePath: string, cwd: string): string {
+  return filePath.startsWith("/") ? filePath : join(cwd, filePath);
 }
 
 function parseTelegramAttachmentRoots(rawValue: string | undefined, fallbackRoot: string): string[] {

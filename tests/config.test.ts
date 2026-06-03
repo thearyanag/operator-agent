@@ -39,6 +39,52 @@ test("accepts a custom operator state database path", () => {
   expect(appConfig.operatorStateDbPath).toBe("/data/operator/operator.sqlite");
 });
 
+test("accepts Operator Postgres, owner, bot username, and control panel config", () => {
+  const appConfig = loadConfig(
+    {
+      ...baseEnv,
+      TELEGRAM_BOT_USERNAME: "operator_bot",
+      OPERATOR_DATABASE_URL: "postgresql://operator:operator@localhost:5432/operator",
+      OPERATOR_OWNER_ID: "11111111-1111-4111-8111-111111111111",
+      OPERATOR_OWNER_TELEGRAM_IDS: "123456789,987654321",
+      OPERATOR_CONTROL_PANEL_TOKEN: "panel-token",
+      OPERATOR_CONTEXT_DIR: "/data/operator-context",
+    },
+    "/tmp/operator-agent",
+  );
+
+  expect(appConfig.telegramBotUsername).toBe("operator_bot");
+  expect(appConfig.operatorDatabaseUrl).toBe("postgresql://operator:operator@localhost:5432/operator");
+  expect(appConfig.operatorOwnerId).toBe("11111111-1111-4111-8111-111111111111");
+  expect([...appConfig.operatorOwnerTelegramIds]).toEqual([123456789, 987654321]);
+  expect(appConfig.operatorControlPanelToken).toBe("panel-token");
+  expect(appConfig.operatorContextDir).toBe("/data/operator-context");
+});
+
+test("rejects invalid Operator owner IDs", () => {
+  expect(() =>
+    loadConfig(
+      {
+        ...baseEnv,
+        OPERATOR_OWNER_ID: "not-a-uuid",
+      },
+      "/tmp/operator-agent",
+    ),
+  ).toThrow(/OPERATOR_OWNER_ID/);
+});
+
+test("rejects invalid Operator owner Telegram IDs", () => {
+  expect(() =>
+    loadConfig(
+      {
+        ...baseEnv,
+        OPERATOR_OWNER_TELEGRAM_IDS: "abc",
+      },
+      "/tmp/operator-agent",
+    ),
+  ).toThrow(/OPERATOR_OWNER_TELEGRAM_IDS/);
+});
+
 test("maps OpenRouter provider inputs into a pi model ref", () => {
   const appConfig = loadConfig(
     {
