@@ -19,6 +19,14 @@ export async function canUsePrivateDm(ctx: Context, appConfig: AppConfig): Promi
 
   if (!userId) return false;
 
+  return canUseTelegramUser(userId, ctx.api, appConfig);
+}
+
+export async function canUseTelegramUser(
+  userId: number,
+  api: Context["api"],
+  appConfig: AppConfig,
+): Promise<boolean> {
   if (appConfig.allowedUserIds.size === 0 && appConfig.allowedGroupId === null) {
     return true;
   }
@@ -29,7 +37,7 @@ export async function canUsePrivateDm(ctx: Context, appConfig: AppConfig): Promi
 
   if (appConfig.allowedGroupId !== null) {
     try {
-      const member = await ctx.api.getChatMember(appConfig.allowedGroupId, userId);
+      const member = await api.getChatMember(appConfig.allowedGroupId, userId);
       return isActiveMemberStatus(member.status);
     } catch (error) {
       console.error(
@@ -42,12 +50,14 @@ export async function canUsePrivateDm(ctx: Context, appConfig: AppConfig): Promi
   return false;
 }
 
-export async function replyUnauthorized(ctx: Context, appConfig: AppConfig): Promise<void> {
-  const message = appConfig.allowedGroupId !== null
+export function getUnauthorizedMessage(appConfig: AppConfig): string {
+  return appConfig.allowedGroupId !== null
     ? "Sorry, you are not allowed to use this bot. You must be explicitly whitelisted or belong to the configured Telegram group."
     : "Sorry, you are not allowed to use this bot. You must be explicitly whitelisted.";
+}
 
-  await ctx.reply(message);
+export async function replyUnauthorized(ctx: Context, appConfig: AppConfig): Promise<void> {
+  await ctx.reply(getUnauthorizedMessage(appConfig));
 }
 
 function isActiveMemberStatus(status: string): boolean {

@@ -27,6 +27,13 @@ test("defaults pi model to Anthropic Claude Sonnet 4.5", () => {
   expect(appConfig.operatorStateDbPath).toBe("/tmp/operator-agent/.operator/state/operator.sqlite");
 });
 
+test("enables Telegram guest message updates by default", () => {
+  const appConfig = loadConfig(baseEnv, "/tmp/operator-agent");
+
+  expect(appConfig.telegramAllowedUpdates).toContain("message");
+  expect(appConfig.telegramAllowedUpdates).toContain("guest_message");
+});
+
 test("accepts a custom operator state database path", () => {
   const appConfig = loadConfig(
     {

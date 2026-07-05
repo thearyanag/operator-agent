@@ -53,11 +53,12 @@ registerTelegramHandlers(bot, {
 });
 
 logStartupConfig(config);
+await verifyTelegramGuestModeSupport(bot);
 startHealthServer(operatorStore);
 
 bot.start({
   drop_pending_updates: true,
-  allowed_updates: config.telegramAllowedUpdates,
+  allowed_updates: config.telegramAllowedUpdates as never,
 });
 
 async function createOperatorStore(): Promise<OperatorStore | undefined> {
@@ -97,4 +98,15 @@ function startHealthServer(operatorStore?: OperatorStore): void {
   });
 
   console.log(`Health server listening on port ${port}`);
+}
+
+async function verifyTelegramGuestModeSupport(bot: Bot): Promise<void> {
+  try {
+    const me = await bot.api.getMe();
+    if (!(me as { supports_guest_queries?: boolean }).supports_guest_queries) {
+      console.warn("Telegram bot does not report supports_guest_queries. Enable Guest Mode in BotFather before rollout.");
+    }
+  } catch (error) {
+    console.warn(`Could not verify Telegram guest mode support: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }

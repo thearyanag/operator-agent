@@ -28,7 +28,14 @@ import type {
   TelegramEditedBusinessMessage,
   TelegramRunContext,
 } from "../types";
-import { canUsePrivateDm, isSupportedChat, isTeamGroupChat, replyUnauthorized } from "./access";
+import {
+  canUsePrivateDm,
+  canUseTelegramUser,
+  getUnauthorizedMessage,
+  isSupportedChat,
+  isTeamGroupChat,
+  replyUnauthorized,
+} from "./access";
 import {
   BusinessConnectionStore,
   canReplyAsBusinessAccount,
@@ -36,15 +43,24 @@ import {
 } from "./business";
 import {
   buildBusinessRunContext,
+  buildGuestRunContext,
   buildStandardRunContext,
   getAuditContextForRun,
   getBusinessAuditContext,
 } from "./context";
 import {
+  createTelegramGuestReplySink,
   createTelegramReplySink,
   formatPiError,
   type TelegramReplySink,
 } from "./replies";
+import { TelegramTurnHarness } from "./turn-harness";
+import {
+  extractGuestMessageTurnEnvelope,
+  extractStandardMessageTurnEnvelope,
+  getTelegramGuestMessage,
+  type TelegramMessageTurnEnvelope,
+} from "./turn-envelope";
 
 type TelegramHandlerDeps = {
   appConfig: AppConfig;
@@ -56,6 +72,7 @@ type TelegramHandlerDeps = {
 
 export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlerDeps): void {
   const businessConnections = new BusinessConnectionStore(deps.stateDb, deps.operatorStore);
+  const turnHarness = createTelegramTurnHarness(deps);
 
   bot.catch((error) => {
     console.error("Telegram bot error:", error.error);
@@ -70,88 +87,31 @@ export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlerDeps): v
     });
   });
 
+  bot.use(async (ctx, next) => {
+    if (!getTelegramGuestMessage(ctx)) {
+      await next();
+      return;
+    }
+
+    const extracted = extractGuestMessageTurnEnvelope(ctx);
+    if (!extracted.ok) {
+      await handleInvalidGuestEnvelope(ctx, extracted.reason, deps);
+      return;
+    }
+
+    await turnHarness.handle(extracted.envelope);
+  });
+
   bot.command("start", async (ctx) => {
-    if (ctx.from?.is_bot) return;
-
-    if (isTeamGroupChat(ctx, deps.appConfig)) {
-      await ctx.reply("Operator is watching this group. Tag me when you want a reply.");
-      return;
-    }
-
-    if (ctx.chat?.type !== "private") return;
-
-    if (!(await canUsePrivateDm(ctx, deps.appConfig))) {
-      await replyUnauthorized(ctx, deps.appConfig);
-      return;
-    }
-
-    await ctx.reply("Hi! Send me a message and I'll pass it to pi.");
+    const extracted = extractStandardMessageTurnEnvelope(ctx);
+    if (!extracted.ok) return;
+    await turnHarness.handle(extracted.envelope);
   });
 
   bot.on("message", async (ctx) => {
-    if (ctx.from?.is_bot) return;
-    if (!isSupportedChat(ctx, deps.appConfig)) return;
-
-    const text = ctx.message?.text ?? ctx.message?.caption;
-    if (!text) {
-      await ctx.reply("Send me a text message and I'll pass it to pi.");
-      return;
-    }
-
-    const runContext = buildStandardRunContext(ctx, text);
-    const auditContext = getAuditContextForRun(runContext);
-
-    await deps.auditLogger.log({
-      ...auditContext,
-      event: "incoming_message",
-      text,
-    });
-
-    const canUseBot = isTeamGroupChat(ctx, deps.appConfig)
-      ? true
-      : ctx.chat?.type === "private" && (await canUsePrivateDm(ctx, deps.appConfig));
-
-    if (!canUseBot) {
-      await deps.auditLogger.log({
-        ...auditContext,
-        event: "message_rejected",
-        error: "unauthorized",
-      });
-      await replyUnauthorized(ctx, deps.appConfig);
-      return;
-    }
-
-    const operatorEnvelope = await recordOperatorEnvelopeForStandardMessage(ctx, runContext, text, deps);
-
-    if (await handleOperatorCommand(ctx, runContext, text, deps, operatorEnvelope)) {
-      return;
-    }
-
-    const runtimePolicy = operatorEnvelope?.policyDecision ?? evaluateOperatorPolicy({
-      conversation: {
-        mode: runContext.surface === "private" ? "assistant" : "team",
-        status: "active",
-      },
-      observationText: text,
-      runContext,
-      ctx,
-      botUsername: deps.appConfig.telegramBotUsername,
-    });
-
-    if (!runtimePolicy.shouldInvokeAgent) {
-      if (operatorEnvelope) {
-        await maybeRecordObservedOutput(operatorEnvelope, text, deps);
-      }
-      return;
-    }
-
-    await processTelegramRun(
-      ctx,
-      withActiveInvestigationPrompt(runContext, deps),
-      createTelegramReplySink(ctx, runContext, deps.appConfig),
-      deps,
-      operatorEnvelope,
-    );
+    const extracted = extractStandardMessageTurnEnvelope(ctx);
+    if (!extracted.ok) return;
+    await turnHarness.handle(extracted.envelope);
   });
 
   bot.on("business_connection", async (ctx) => {
@@ -187,6 +147,199 @@ export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlerDeps): v
     if (!deleted) return;
     await handleDeletedBusinessMessages(deleted, deps);
   });
+}
+
+function createTelegramTurnHarness(deps: TelegramHandlerDeps): TelegramTurnHarness {
+  return new TelegramTurnHarness({
+    handlers: {
+      handleStart: async (envelope) => {
+        if (envelope.kind !== "message" || envelope.mode !== "chat") return;
+        await handleStandardStartTurn(envelope, deps);
+      },
+      handleUnsupported: async (envelope) => {
+        if (envelope.kind !== "message") return;
+        await handleUnsupportedTelegramTurn(envelope);
+      },
+      handlePromptRun: async (envelope) => {
+        if (envelope.kind !== "message") return;
+        if (envelope.mode === "guest") {
+          await handleGuestPromptTurn(envelope, deps);
+          return;
+        }
+        await handleStandardPromptTurn(envelope, deps);
+      },
+    },
+  });
+}
+
+async function handleStandardStartTurn(
+  envelope: TelegramMessageTurnEnvelope,
+  deps: TelegramHandlerDeps,
+): Promise<void> {
+  const ctx = envelope.ctx;
+  if (ctx.from?.is_bot) return;
+
+  if (isTeamGroupChat(ctx, deps.appConfig)) {
+    await ctx.reply("Operator is watching this group. Tag me when you want a reply.");
+    return;
+  }
+
+  if (ctx.chat?.type !== "private") return;
+
+  if (!(await canUsePrivateDm(ctx, deps.appConfig))) {
+    await replyUnauthorized(ctx, deps.appConfig);
+    return;
+  }
+
+  await ctx.reply("Hi! Send me a message and I'll pass it to pi.");
+}
+
+async function handleUnsupportedTelegramTurn(envelope: TelegramMessageTurnEnvelope): Promise<void> {
+  if (envelope.mode === "guest" && envelope.guestQueryId) {
+    await createTelegramGuestReplySink(envelope.ctx, envelope.guestQueryId).sendFinal(
+      "Telegram guest mode supports questions and replies, but not bot setup commands.",
+    );
+  }
+}
+
+async function handleStandardPromptTurn(
+  envelope: TelegramMessageTurnEnvelope,
+  deps: TelegramHandlerDeps,
+): Promise<void> {
+  const ctx = envelope.ctx;
+  if (ctx.from?.is_bot) return;
+  if (!isSupportedChat(ctx, deps.appConfig)) return;
+
+  const text = envelope.text;
+  if (!text) {
+    await ctx.reply("Send me a text message and I'll pass it to pi.");
+    return;
+  }
+
+  const runContext = buildStandardRunContext(ctx, text);
+  const auditContext = getAuditContextForRun(runContext);
+
+  await deps.auditLogger.log({
+    ...auditContext,
+    event: "incoming_message",
+    text,
+  });
+
+  const canUseBot = isTeamGroupChat(ctx, deps.appConfig)
+    ? true
+    : ctx.chat?.type === "private" && (await canUsePrivateDm(ctx, deps.appConfig));
+
+  if (!canUseBot) {
+    await deps.auditLogger.log({
+      ...auditContext,
+      event: "message_rejected",
+      error: "unauthorized",
+    });
+    await replyUnauthorized(ctx, deps.appConfig);
+    return;
+  }
+
+  const operatorEnvelope = await recordOperatorEnvelopeForStandardMessage(ctx, runContext, text, deps);
+
+  if (await handleOperatorCommand(ctx, runContext, text, deps, operatorEnvelope)) {
+    return;
+  }
+
+  const runtimePolicy = operatorEnvelope?.policyDecision ?? evaluateOperatorPolicy({
+    conversation: {
+      mode: runContext.surface === "private" ? "assistant" : "team",
+      status: "active",
+    },
+    observationText: text,
+    runContext,
+    ctx,
+    botUsername: deps.appConfig.telegramBotUsername,
+  });
+
+  if (!runtimePolicy.shouldInvokeAgent) {
+    if (operatorEnvelope) {
+      await maybeRecordObservedOutput(operatorEnvelope, text, deps);
+    }
+    return;
+  }
+
+  await processTelegramRun(
+    ctx,
+    withActiveInvestigationPrompt(runContext, deps),
+    createTelegramReplySink(ctx, runContext, deps.appConfig),
+    deps,
+    operatorEnvelope,
+  );
+}
+
+async function handleGuestPromptTurn(
+  envelope: TelegramMessageTurnEnvelope,
+  deps: TelegramHandlerDeps,
+): Promise<void> {
+  const guestQueryId = envelope.guestQueryId;
+  if (!guestQueryId) return;
+
+  const sink = createTelegramGuestReplySink(envelope.ctx, guestQueryId);
+  const text = envelope.text;
+  if (!text) {
+    await sink.sendFinal("Send a text message or caption when summoning Operator.");
+    return;
+  }
+
+  const callerId = envelope.senderTelegramId;
+  if (callerId === undefined) {
+    await sink.sendFinal("Could not identify the Telegram caller. Try summoning Operator from your Telegram account.");
+    return;
+  }
+
+  const runContext = buildGuestRunContext(envelope, text);
+  const auditContext = getAuditContextForRun(runContext);
+
+  await deps.auditLogger.log({
+    ...auditContext,
+    event: "guest_message_received",
+    text,
+  });
+
+  if (!(await canUseTelegramUser(callerId, envelope.ctx.api, deps.appConfig))) {
+    await deps.auditLogger.log({
+      ...auditContext,
+      event: "guest_message_rejected",
+      error: "unauthorized",
+    });
+    await sink.sendFinal(getUnauthorizedMessage(deps.appConfig));
+    return;
+  }
+
+  await processTelegramRun(
+    envelope.ctx,
+    withActiveInvestigationPrompt(runContext, deps),
+    sink,
+    deps,
+  );
+}
+
+async function handleInvalidGuestEnvelope(
+  ctx: Context,
+  reason: string,
+  deps: TelegramHandlerDeps,
+): Promise<void> {
+  const message = getTelegramGuestMessage(ctx);
+  await deps.auditLogger.log({
+    event: "guest_message_rejected",
+    chatId: message?.chat.id,
+    chatType: message?.chat.type,
+    messageId: message?.message_id,
+    error: reason,
+    surface: "guest",
+  });
+
+  const guestQueryId = typeof message?.guest_query_id === "string" ? message.guest_query_id.trim() : "";
+  if (!guestQueryId) return;
+
+  await createTelegramGuestReplySink(ctx, guestQueryId).sendFinal(
+    "Could not process this Telegram guest message. Try summoning Operator again.",
+  );
 }
 
 async function recordOperatorEnvelopeForStandardMessage(

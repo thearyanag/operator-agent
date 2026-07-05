@@ -33,12 +33,13 @@ export function loadConfig(env: Record<string, string | undefined> = Bun.env, cw
     telegramAllowedUpdates: enableTelegramBusinessAutomation
       ? [
           "message",
+          "guest_message",
           "business_connection",
           "business_message",
           "edited_business_message",
           "deleted_business_messages",
         ]
-      : ["message"],
+      : ["message", "guest_message"],
     piWorkdir,
     piProviderMode,
     piModel: resolvePiModel(env, piProviderMode),

@@ -42,6 +42,10 @@ export function createTelegramReplySink(
   return new EditableProgressReplySink(ctx, appConfig);
 }
 
+export function createTelegramGuestReplySink(ctx: Context, guestQueryId: string): TelegramReplySink {
+  return new GuestInlineReplySink(ctx, guestQueryId);
+}
+
 export class EditableProgressReplySink implements TelegramReplySink {
   private readonly progress: LiveTelegramProgressMessage;
   private stopTyping: (() => void) | undefined;
@@ -209,6 +213,134 @@ export class NoopReplySink implements TelegramReplySink {
   }
   async sendAttachments(_attachments: TelegramQueuedAttachment[]): Promise<void> {}
   async sendError(_text: string): Promise<void> {}
+}
+
+type TelegramGuestInlineResult = {
+  type: "article";
+  id: string;
+  title: string;
+  description?: string;
+  input_message_content: {
+    message_text: string;
+    parse_mode?: "HTML";
+    link_preview_options?: { is_disabled: boolean };
+  };
+};
+
+type TelegramSentGuestMessage = {
+  inline_message_id?: string;
+};
+
+type TelegramGuestApi = Context["api"] & {
+  answerGuestQuery?: (guestQueryId: string, result: TelegramGuestInlineResult) => Promise<TelegramSentGuestMessage>;
+  raw?: {
+    answerGuestQuery?: (payload: {
+      guest_query_id: string;
+      result: TelegramGuestInlineResult;
+    }) => Promise<TelegramSentGuestMessage>;
+  };
+};
+
+export class GuestInlineReplySink implements TelegramReplySink {
+  private readonly api: TelegramGuestApi;
+  private inlineMessageId: string | undefined;
+  private answerChain: Promise<void> | undefined;
+  private editChain = Promise.resolve();
+  private lastDeliveredText = "";
+
+  constructor(
+    private readonly ctx: Context,
+    private readonly guestQueryId: string,
+  ) {
+    this.api = ctx.api as TelegramGuestApi;
+  }
+
+  async start(): Promise<void> {
+    await this.answerOnce("Thinking...");
+  }
+
+  handleProgress(update: PiProgressUpdate): void {
+    if (update.type !== "answer") return;
+    void this.editIfPossible(update.text);
+  }
+
+  async stop(): Promise<void> {
+    await this.answerChain?.catch(() => undefined);
+    await this.editChain.catch(() => undefined);
+  }
+
+  async sendFinal(text: string): Promise<ReplyRenderResult> {
+    return this.deliver(text);
+  }
+
+  async sendAttachments(_attachments: TelegramQueuedAttachment[]): Promise<void> {}
+
+  async sendError(text: string): Promise<void> {
+    await this.deliver(text);
+  }
+
+  private async deliver(text: string): Promise<ReplyRenderResult> {
+    await this.answerChain?.catch(() => undefined);
+    if (this.inlineMessageId) {
+      await this.editIfPossible(text);
+      return { mode: "plain", chunkCount: countGuestChunks(text) };
+    }
+
+    await this.answerOnce(text);
+    return { mode: "plain", chunkCount: countGuestChunks(text) };
+  }
+
+  private async answerOnce(text: string): Promise<void> {
+    if (this.inlineMessageId) return;
+    if (this.answerChain) {
+      await this.answerChain;
+      return;
+    }
+
+    this.answerChain = this.callAnswerGuestQuery(buildGuestInlineResult(text))
+      .then((sent) => {
+        this.inlineMessageId = sent.inline_message_id;
+        this.lastDeliveredText = buildGuestMessageText(text);
+      })
+      .finally(() => {
+        this.answerChain = undefined;
+      });
+    await this.answerChain;
+  }
+
+  private async editIfPossible(text: string): Promise<void> {
+    await this.answerChain?.catch(() => undefined);
+    const inlineMessageId = this.inlineMessageId;
+    if (!inlineMessageId) return;
+
+    const messageText = buildGuestMessageText(text);
+    if (!messageText || messageText === this.lastDeliveredText) return;
+
+    this.editChain = this.editChain
+      .catch(() => undefined)
+      .then(async () => {
+        await this.api.editMessageTextInline(inlineMessageId, messageText, {
+          link_preview_options: { is_disabled: true },
+        });
+        this.lastDeliveredText = messageText;
+      });
+    await this.editChain;
+  }
+
+  private async callAnswerGuestQuery(result: TelegramGuestInlineResult): Promise<TelegramSentGuestMessage> {
+    if (this.api.answerGuestQuery) {
+      return this.api.answerGuestQuery(this.guestQueryId, result);
+    }
+
+    if (this.api.raw?.answerGuestQuery) {
+      return this.api.raw.answerGuestQuery({
+        guest_query_id: this.guestQueryId,
+        result,
+      });
+    }
+
+    throw new Error("Telegram API client does not support answerGuestQuery.");
+  }
 }
 
 class PrivateDraftReplySink implements TelegramReplySink {
@@ -438,6 +570,30 @@ function clipGroupStreamingText(text: string, maxLength = 3500): string {
   if (!trimmed) return "";
   if (trimmed.length <= maxLength) return trimmed;
   return `...\n${trimmed.slice(-(maxLength - 4))}`;
+}
+
+function buildGuestInlineResult(text: string): TelegramGuestInlineResult {
+  const messageText = buildGuestMessageText(text);
+  return {
+    type: "article",
+    id: "operator-response",
+    title: "Operator",
+    description: messageText.slice(0, 120),
+    input_message_content: {
+      message_text: messageText,
+      link_preview_options: { is_disabled: true },
+    },
+  };
+}
+
+function buildGuestMessageText(text: string): string {
+  const chunks = chunkText(text.trim() || "Done.", 3900);
+  if (chunks.length <= 1) return chunks[0] ?? "Done.";
+  return `${chunks[0]}\n\n[Response truncated for Telegram guest mode.]`;
+}
+
+function countGuestChunks(text: string): number {
+  return chunkText(text.trim() || "Done.", 3900).length;
 }
 
 async function sendPlainTelegramMessage(

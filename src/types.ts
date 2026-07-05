@@ -29,10 +29,11 @@ export type ReplyRenderResult = {
   chunkCount: number;
 };
 
-export type TelegramSurface = "private" | "group" | "business";
+export type TelegramSurface = "private" | "group" | "business" | "guest";
 
 export type TelegramAllowedUpdate =
   | "message"
+  | "guest_message"
   | "business_connection"
   | "business_message"
   | "edited_business_message"

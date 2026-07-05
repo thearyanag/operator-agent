@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  createTelegramGuestReplySink,
   createTelegramReplySink,
   GroupStreamingReplySink,
 } from "../src/telegram/replies";
@@ -62,4 +63,43 @@ test("group reply sink reacts, types, and streams answer text through one edited
   expect(replies).toEqual(["partial answer"]);
   expect(edits).toEqual(["partial answer continued"]);
   await sink.stop();
+});
+
+test("guest reply sink answers guest query once and edits inline message", async () => {
+  const answers: unknown[] = [];
+  const edits: unknown[] = [];
+  const ctx = {
+    api: {
+      answerGuestQuery: async (guestQueryId: string, result: unknown) => {
+        answers.push({ guestQueryId, result });
+        return { inline_message_id: "inline-1" };
+      },
+      editMessageTextInline: async (inlineMessageId: string, text: string) => {
+        edits.push({ inlineMessageId, text });
+        return true;
+      },
+    },
+  };
+
+  const sink = createTelegramGuestReplySink(ctx as never, "guest-query-1");
+  await sink.start();
+  sink.handleProgress({ type: "answer", text: "partial answer" });
+  await sink.stop();
+  const result = await sink.sendFinal("final answer");
+
+  expect(result).toEqual({ mode: "plain", chunkCount: 1 });
+  expect(answers).toHaveLength(1);
+  expect(answers[0]).toMatchObject({
+    guestQueryId: "guest-query-1",
+    result: {
+      type: "article",
+      input_message_content: {
+        message_text: "Thinking...",
+      },
+    },
+  });
+  expect(edits).toEqual([
+    { inlineMessageId: "inline-1", text: "partial answer" },
+    { inlineMessageId: "inline-1", text: "final answer" },
+  ]);
 });

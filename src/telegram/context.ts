@@ -1,6 +1,7 @@
 import type { Context } from "grammy";
 import type { AuditLogEntry, TelegramBusinessMessage, TelegramEditedBusinessMessage, TelegramRunContext, TelegramUserLike } from "../types";
 import { canReplyAsBusinessAccount, type BusinessConnectionState } from "./business";
+import type { TelegramMessageTurnEnvelope } from "./turn-envelope";
 
 export function buildStandardRunContext(ctx: Context, text: string): TelegramRunContext {
   const chat = ctx.chat;
@@ -56,6 +57,29 @@ export function buildBusinessRunContext(
     businessCanReply: canReplyAsBusinessAccount(connection),
     businessIsEnabled: connection.isEnabled,
     dryRun: options.dryRun,
+  };
+}
+
+export function buildGuestRunContext(envelope: TelegramMessageTurnEnvelope, text: string): TelegramRunContext {
+  if (envelope.mode !== "guest") {
+    throw new Error("Cannot build guest run context from a non-guest Telegram envelope.");
+  }
+  if (envelope.senderTelegramId === undefined) {
+    throw new Error("Cannot build guest run context without a caller Telegram user ID.");
+  }
+
+  return {
+    surface: "guest",
+    sessionKey: `guest:${envelope.senderTelegramId}:${envelope.chatId}`,
+    chatId: envelope.chatId,
+    chatType: envelope.chatType,
+    chatTitle: envelope.chatTitle,
+    userId: envelope.senderTelegramId,
+    username: envelope.senderUsername,
+    sender: envelope.senderDisplayName,
+    messageId: envelope.message.message_id,
+    text,
+    prompt: buildGuestPiPrompt(envelope, text),
   };
 }
 
@@ -143,6 +167,19 @@ function buildBusinessPiPrompt(
     `Incoming chat ID: ${message.chat.id}.`,
     `Sender: ${sender}.`,
     "Reply on behalf of the connected Telegram account owner to the message below.",
+    "",
+    text,
+  ].join("\n");
+}
+
+function buildGuestPiPrompt(envelope: TelegramMessageTurnEnvelope, text: string): string {
+  const chatTitle = envelope.chatTitle ?? `chat ${envelope.chatId}`;
+  const sender = envelope.senderDisplayName ?? envelope.senderUsername ?? String(envelope.senderTelegramId ?? "unknown user");
+
+  return [
+    `Telegram guest message in ${chatTitle}.`,
+    `Sender: ${sender}.`,
+    "Reply as a guest bot response to the message below. The bot may not be installed in this chat, so keep the response self-contained and appropriate for the current chat.",
     "",
     text,
   ].join("\n");

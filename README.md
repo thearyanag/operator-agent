@@ -135,6 +135,14 @@ Set `OPERATOR_OWNER_TELEGRAM_IDS` to the Telegram user IDs that may use owner-wi
 OPERATOR_OWNER_TELEGRAM_IDS=123456789
 ```
 
+## Telegram Guest Mode
+
+Operator subscribes to Telegram Bot API `guest_message` updates by default. Guest mode lets the bot answer when it is summoned in a chat where it is not a member.
+
+Guest callers use the same access boundary as private DMs: if no `ALLOWED_USER_IDS` or `ALLOWED_GROUP_ID` is configured, any Telegram user can summon the bot; otherwise the caller must be whitelisted or belong to the configured group.
+
+Telegram must report `supports_guest_queries` for the bot. If it does not, Operator logs a startup warning and continues running.
+
 ## Telegram Business Automation
 
 Telegram Business / Chat Automation is enabled by default and powers Personal Operator mode.
