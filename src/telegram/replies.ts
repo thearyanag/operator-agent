@@ -13,7 +13,9 @@ import { toTelegramMethodOptions } from "./api-options";
 
 const GROUP_STREAM_INTERVAL_MS = 500;
 const GUEST_STREAM_INTERVAL_MS = 2_000;
-const GUEST_RENDER_LIMIT = 3_500;
+const RICH_MARKDOWN_LIMIT = 32_000;
+const CLASSIC_HTML_LIMIT = 3_500;
+const CLASSIC_TEXT_LIMIT = 4_000;
 
 export interface TelegramReplySink {
   start(): Promise<void>;
@@ -76,7 +78,7 @@ export class EditableProgressReplySink implements TelegramReplySink {
   }
 
   async sendFinal(text: string): Promise<ReplyRenderResult> {
-    return replyRenderedResponse(this.ctx, text, {
+    return replyRichMarkdownResponse(this.ctx, text, {
       replaceMessageId: this.progress.messageId,
       businessConnectionId: this.options.businessConnectionId,
     });
@@ -88,7 +90,7 @@ export class EditableProgressReplySink implements TelegramReplySink {
 
   async sendError(text: string): Promise<void> {
     if (this.progress.messageId !== undefined) {
-      await replyRenderedResponse(this.ctx, text, {
+      await replyRichMarkdownResponse(this.ctx, text, {
         replaceMessageId: this.progress.messageId,
         businessConnectionId: this.options.businessConnectionId,
       });
@@ -130,7 +132,7 @@ export class GroupStreamingReplySink implements TelegramReplySink {
 
   handleProgress(update: PiProgressUpdate): void {
     if (this.stopped || update.type !== "answer") return;
-    this.latestAnswerText = clipGroupStreamingText(update.text);
+    this.latestAnswerText = clipRichMarkdownText(update.text);
     this.scheduleRender();
   }
 
@@ -146,7 +148,7 @@ export class GroupStreamingReplySink implements TelegramReplySink {
   }
 
   async sendFinal(text: string): Promise<ReplyRenderResult> {
-    return replyRenderedResponse(this.ctx, text, {
+    return replyRichMarkdownResponse(this.ctx, text, {
       replaceMessageId: this.streamMessageId,
     });
   }
@@ -157,7 +159,7 @@ export class GroupStreamingReplySink implements TelegramReplySink {
 
   async sendError(text: string): Promise<void> {
     if (this.streamMessageId !== undefined) {
-      await replyRenderedResponse(this.ctx, text, {
+      await replyRichMarkdownResponse(this.ctx, text, {
         replaceMessageId: this.streamMessageId,
       });
       return;
@@ -184,17 +186,10 @@ export class GroupStreamingReplySink implements TelegramReplySink {
       .then(async () => {
         try {
           if (this.streamMessageId === undefined) {
-            const message = await this.ctx.reply(text, {
-              link_preview_options: { is_disabled: true },
-            });
+            const message = await sendTelegramRichMessage(this.ctx, text);
             this.streamMessageId = message.message_id;
           } else {
-            const chatId = this.ctx.chat?.id;
-            if (chatId === undefined) return;
-
-            await this.ctx.api.editMessageText(chatId, this.streamMessageId, text, {
-              link_preview_options: { is_disabled: true },
-            });
+            await editTelegramMessageRich(this.ctx, this.streamMessageId, text);
           }
           this.renderedAnswerText = text;
         } catch (error) {
@@ -222,35 +217,72 @@ type TelegramGuestInlineResult = {
   id: string;
   title: string;
   description?: string;
-  input_message_content: {
-    message_text: string;
-    parse_mode?: "HTML";
-    link_preview_options?: { is_disabled: boolean };
-  };
+  input_message_content:
+    | {
+        rich_message: InputRichMessage;
+      }
+    | {
+        message_text: string;
+        parse_mode?: "HTML";
+        link_preview_options?: { is_disabled: boolean };
+      };
 };
 
-type GuestRenderedMessage = {
-  text: string;
-  parseMode?: "HTML";
+type RenderedRichMarkdown = {
+  markdown: string;
   chunkCount: number;
+};
+
+type InputRichMessage = {
+  markdown: string;
+  is_rtl?: boolean;
+  skip_entity_detection?: boolean;
+};
+
+type TelegramMessageLike = {
+  message_id: number;
 };
 
 type TelegramSentGuestMessage = {
   inline_message_id?: string;
 };
 
-type TelegramGuestApi = Context["api"] & {
+type TelegramRawApi = Context["api"] & {
   answerGuestQuery?: (guestQueryId: string, result: TelegramGuestInlineResult) => Promise<TelegramSentGuestMessage>;
   raw?: {
     answerGuestQuery?: (payload: {
       guest_query_id: string;
       result: TelegramGuestInlineResult;
     }) => Promise<TelegramSentGuestMessage>;
+    editMessageText?: (payload: {
+      chat_id?: number | string;
+      message_id?: number;
+      inline_message_id?: string;
+      text?: string;
+      parse_mode?: "HTML";
+      link_preview_options?: { is_disabled: boolean };
+      rich_message?: InputRichMessage;
+      business_connection_id?: string;
+    }) => Promise<unknown>;
+    sendRichMessage?: (payload: {
+      chat_id: number | string;
+      rich_message: InputRichMessage;
+      business_connection_id?: string;
+      disable_notification?: boolean;
+      protect_content?: boolean;
+      allow_paid_broadcast?: boolean;
+    }) => Promise<TelegramMessageLike>;
+    sendRichMessageDraft?: (payload: {
+      chat_id: number;
+      draft_id: number;
+      rich_message: InputRichMessage;
+      message_thread_id?: number;
+    }) => Promise<true>;
   };
 };
 
 export class GuestInlineReplySink implements TelegramReplySink {
-  private readonly api: TelegramGuestApi;
+  private readonly api: TelegramRawApi;
   private inlineMessageId: string | undefined;
   private answerChain: Promise<void> | undefined;
   private editChain = Promise.resolve();
@@ -264,7 +296,7 @@ export class GuestInlineReplySink implements TelegramReplySink {
     private readonly ctx: Context,
     private readonly guestQueryId: string,
   ) {
-    this.api = ctx.api as TelegramGuestApi;
+    this.api = ctx.api as TelegramRawApi;
   }
 
   async start(): Promise<void> {
@@ -316,9 +348,16 @@ export class GuestInlineReplySink implements TelegramReplySink {
 
     const rendered = buildGuestRenderedMessage(text);
     this.answerChain = this.callAnswerGuestQuery(buildGuestInlineResult(rendered))
+      .catch((error) => {
+        if (!isTelegramRichFallbackError(error)) {
+          throw error;
+        }
+        console.warn("Telegram guest Rich Message answer failed, falling back to classic HTML:", error);
+        return this.callAnswerGuestQuery(buildGuestClassicInlineResult(text));
+      })
       .then((sent) => {
         this.inlineMessageId = sent.inline_message_id;
-        this.lastDeliveredText = rendered.text;
+        this.lastDeliveredText = rendered.markdown;
       })
       .finally(() => {
         this.answerChain = undefined;
@@ -354,7 +393,7 @@ export class GuestInlineReplySink implements TelegramReplySink {
     if (!inlineMessageId) return;
 
     const rendered = buildGuestRenderedMessage(text);
-    if (!rendered.text || rendered.text === this.lastDeliveredText) return;
+    if (!rendered.markdown || rendered.markdown === this.lastDeliveredText) return;
 
     const waitMs = this.retryUntil - Date.now();
     if (waitMs > 0) {
@@ -373,11 +412,8 @@ export class GuestInlineReplySink implements TelegramReplySink {
 
         while (true) {
           try {
-            await this.api.editMessageTextInline(inlineMessageId, rendered.text, {
-              ...(rendered.parseMode ? { parse_mode: rendered.parseMode } : {}),
-              link_preview_options: { is_disabled: true },
-            });
-            this.lastDeliveredText = rendered.text;
+            await editTelegramInlineRichMessage(this.ctx, inlineMessageId, rendered.markdown);
+            this.lastDeliveredText = rendered.markdown;
             return;
           } catch (error) {
             const retryAfter = getTelegramRetryAfterMs(error);
@@ -396,12 +432,13 @@ export class GuestInlineReplySink implements TelegramReplySink {
               return;
             }
 
-            if (rendered.parseMode && isTelegramParseError(error)) {
-              const fallback = buildGuestPlainMessageText(text);
-              await this.api.editMessageTextInline(inlineMessageId, fallback, {
+            if (isTelegramRichFallbackError(error)) {
+              const fallback = buildGuestClassicMessage(text);
+              await this.api.editMessageTextInline(inlineMessageId, fallback.text, {
+                ...(fallback.parseMode ? { parse_mode: fallback.parseMode } : {}),
                 link_preview_options: { is_disabled: true },
               });
-              this.lastDeliveredText = fallback;
+              this.lastDeliveredText = fallback.text;
               return;
             }
 
@@ -449,7 +486,7 @@ class PrivateDraftReplySink implements TelegramReplySink {
 
   handleProgress(update: PiProgressUpdate): void {
     if (this.stopped || update.type !== "answer") return;
-    this.latestDraftText = clipTelegramDraftText(update.text);
+    this.latestDraftText = clipRichMarkdownText(update.text);
     this.scheduleDraft();
   }
 
@@ -465,7 +502,7 @@ class PrivateDraftReplySink implements TelegramReplySink {
   }
 
   async sendFinal(text: string): Promise<ReplyRenderResult> {
-    return replyRenderedResponse(this.ctx, text);
+    return replyRichMarkdownResponse(this.ctx, text);
   }
 
   async sendAttachments(attachments: TelegramQueuedAttachment[]): Promise<void> {
@@ -494,9 +531,18 @@ class PrivateDraftReplySink implements TelegramReplySink {
       .catch(() => undefined)
       .then(async () => {
         try {
-          await this.ctx.api.sendMessageDraft(this.chatId, this.draftId, text);
+          await sendTelegramRichMessageDraft(this.ctx, this.chatId, this.draftId, text);
         } catch (error) {
-          console.warn("Failed to send Telegram draft update:", error);
+          if (!isTelegramRichFallbackError(error)) {
+            console.warn("Failed to send Telegram rich draft update:", error);
+            return;
+          }
+
+          try {
+            await this.ctx.api.sendMessageDraft(this.chatId, this.draftId, clipClassicText(text));
+          } catch (fallbackError) {
+            console.warn("Failed to send Telegram draft update:", fallbackError);
+          }
         }
       });
 
@@ -508,7 +554,7 @@ class LiveTelegramProgressMessage {
   private progressMessageId: number | undefined;
   private thinkingText = "";
   private latestStatus = "Thinking...";
-  private lastRenderedHtml = "";
+  private lastRenderedMarkdown = "";
   private renderTimer: ReturnType<typeof setTimeout> | undefined;
   private renderChain = Promise.resolve();
   private stopped = false;
@@ -561,34 +607,23 @@ class LiveTelegramProgressMessage {
   }
 
   private async renderNow(): Promise<void> {
-    const html = buildLiveProgressHtml(this.latestStatus, this.thinkingText);
-    if (html === this.lastRenderedHtml) {
+    const markdown = buildLiveProgressMarkdown(this.latestStatus, this.thinkingText);
+    if (markdown === this.lastRenderedMarkdown) {
       return;
     }
 
-    this.lastRenderedHtml = html;
+    this.lastRenderedMarkdown = markdown;
     this.renderChain = this.renderChain
       .catch(() => undefined)
       .then(async () => {
         try {
           if (this.progressMessageId === undefined) {
-            const message = await this.ctx.reply(html, {
-              parse_mode: "HTML",
-              link_preview_options: { is_disabled: true },
-              ...toTelegramMethodOptions(this.options),
-            });
+            const message = await sendTelegramRichMessage(this.ctx, markdown, this.options);
             this.progressMessageId = message.message_id;
             return;
           }
 
-          const chatId = this.ctx.chat?.id;
-          if (chatId === undefined) return;
-
-          await this.ctx.api.editMessageText(chatId, this.progressMessageId, html, {
-            parse_mode: "HTML",
-            link_preview_options: { is_disabled: true },
-            ...toTelegramMethodOptions(this.options),
-          });
+          await editTelegramMessageRich(this.ctx, this.progressMessageId, markdown, this.options);
         } catch (error) {
           console.warn("Failed to render live Telegram progress message:", error);
         }
@@ -643,79 +678,79 @@ function buildDraftId(updateId: number): number {
   return normalized === 0 ? 1 : normalized;
 }
 
-function clipTelegramDraftText(text: string, maxLength = 4000): string {
+function clipRichMarkdownText(text: string, maxLength = RICH_MARKDOWN_LIMIT): string {
   const trimmed = text.trim();
   if (!trimmed) return "";
   if (trimmed.length <= maxLength) return trimmed;
   return `...\n${trimmed.slice(-(maxLength - 4))}`;
 }
 
-function clipGroupStreamingText(text: string, maxLength = 3500): string {
+function clipClassicText(text: string, maxLength = CLASSIC_TEXT_LIMIT): string {
   const trimmed = text.trim();
   if (!trimmed) return "";
   if (trimmed.length <= maxLength) return trimmed;
   return `...\n${trimmed.slice(-(maxLength - 4))}`;
 }
 
-function buildGuestInlineResult(message: GuestRenderedMessage): TelegramGuestInlineResult {
+function buildGuestInlineResult(message: RenderedRichMarkdown): TelegramGuestInlineResult {
   return {
     type: "article",
     id: "operator-response",
     title: "Operator",
-    description: stripTelegramHtml(message.text).slice(0, 120),
+    description: buildRichDescription(message.markdown),
     input_message_content: {
-      message_text: message.text,
-      ...(message.parseMode ? { parse_mode: message.parseMode } : {}),
+      rich_message: { markdown: message.markdown },
+    },
+  };
+}
+
+function buildGuestClassicInlineResult(text: string): TelegramGuestInlineResult {
+  const fallback = buildGuestClassicMessage(text);
+  return {
+    type: "article",
+    id: "operator-response",
+    title: "Operator",
+    description: buildRichDescription(fallback.text),
+    input_message_content: {
+      message_text: fallback.text,
+      ...(fallback.parseMode ? { parse_mode: fallback.parseMode } : {}),
       link_preview_options: { is_disabled: true },
     },
   };
 }
 
-function buildGuestRenderedMessage(text: string): GuestRenderedMessage {
-  const sourceText = buildGuestPlainMessageText(text);
+function buildGuestClassicMessage(text: string): { text: string; parseMode?: "HTML" } {
   try {
-    const htmlChunks = renderTelegramMessageChunks(sourceText, GUEST_RENDER_LIMIT);
-    if (htmlChunks.length > 0) {
+    const chunks = renderTelegramMessageChunks(buildGuestPlainMessageText(text), CLASSIC_HTML_LIMIT);
+    if (chunks.length > 0) {
       return {
-        text: htmlChunks[0]!,
+        text: chunks[0]!,
         parseMode: "HTML",
-        chunkCount: htmlChunks.length,
       };
     }
   } catch (error) {
-    console.warn("Telegram guest HTML rendering failed, falling back to plain text:", error);
+    console.warn("Telegram guest classic HTML rendering failed, falling back to plain text:", error);
   }
 
-  return {
-    text: sourceText,
-    chunkCount: countGuestChunks(text),
-  };
+  return { text: buildGuestPlainMessageText(text) };
+}
+
+function buildGuestRenderedMessage(text: string): RenderedRichMarkdown {
+  return buildRichMarkdown(text, { truncate: true });
 }
 
 function buildGuestReplyResult(text: string): ReplyRenderResult {
-  const rendered = buildGuestRenderedMessage(text);
+  const rendered = buildRichMarkdown(text, { truncate: true });
   return {
-    mode: rendered.parseMode ? "html" : "plain",
+    mode: "rich",
     chunkCount: rendered.chunkCount,
   };
 }
 
 function buildGuestPlainMessageText(text: string): string {
-  const chunks = chunkText(text.trim() || "Done.", GUEST_RENDER_LIMIT);
+  const chunks = chunkText(text.trim() || "Done.", CLASSIC_TEXT_LIMIT);
   if (chunks.length <= 1) return chunks[0] ?? "Done.";
   return `${chunks[0]}\n\n[Response truncated for Telegram guest mode.]`;
-}
-
-function countGuestChunks(text: string): number {
-  return chunkText(text.trim() || "Done.", GUEST_RENDER_LIMIT).length;
-}
-
-function stripTelegramHtml(text: string): string {
-  return text
-    .replace(/<[^>]+>/g, "")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&");
 }
 
 function delay(ms: number): Promise<void> {
@@ -739,7 +774,7 @@ async function sendPlainTelegramMessage(
   text: string,
   options: TelegramSendOptions = {},
 ): Promise<void> {
-  for (const chunk of chunkText(text, 4000)) {
+  for (const chunk of chunkText(text, CLASSIC_TEXT_LIMIT)) {
     await ctx.reply(chunk, {
       link_preview_options: { is_disabled: true },
       ...toTelegramMethodOptions(options),
@@ -747,7 +782,7 @@ async function sendPlainTelegramMessage(
   }
 }
 
-async function replyRenderedResponse(
+async function replyRichMarkdownResponse(
   ctx: Context,
   text: string,
   options: {
@@ -755,9 +790,161 @@ async function replyRenderedResponse(
     businessConnectionId?: string;
   } = {},
 ): Promise<ReplyRenderResult> {
-  const htmlChunks = renderTelegramMessageChunks(text, 3500);
+  const chunks = buildRichMarkdownChunks(text);
 
   try {
+    if (chunks.length === 0) {
+      throw new Error("Rendered Telegram rich message was empty.");
+    }
+
+    if (options.replaceMessageId !== undefined) {
+      await editTelegramMessageRich(ctx, options.replaceMessageId, chunks[0]!, {
+        businessConnectionId: options.businessConnectionId,
+      });
+      for (const chunk of chunks.slice(1)) {
+        await sendTelegramRichMessage(ctx, chunk, {
+          businessConnectionId: options.businessConnectionId,
+        });
+      }
+    } else {
+      for (const chunk of chunks) {
+        await sendTelegramRichMessage(ctx, chunk, {
+          businessConnectionId: options.businessConnectionId,
+        });
+      }
+    }
+
+    return { mode: "rich", chunkCount: chunks.length };
+  } catch (error) {
+    if (!isTelegramRichFallbackError(error)) {
+      throw error;
+    }
+
+    console.warn("Telegram Rich Message delivery failed, falling back to classic HTML:", error);
+    return replyClassicRenderedResponse(ctx, text, options);
+  }
+}
+
+async function sendTelegramRichMessage(
+  ctx: Context,
+  markdown: string,
+  options: TelegramSendOptions = {},
+): Promise<TelegramMessageLike> {
+  const chatId = ctx.chat?.id;
+  if (chatId === undefined) {
+    throw new Error("Cannot send Telegram rich message without a chat id.");
+  }
+
+  const raw = (ctx.api as TelegramRawApi).raw;
+  if (!raw?.sendRichMessage) {
+    throw new Error("Telegram API client does not support sendRichMessage.");
+  }
+
+  return raw.sendRichMessage({
+    chat_id: chatId,
+    rich_message: { markdown },
+    ...toTelegramMethodOptions(options),
+  });
+}
+
+async function editTelegramMessageRich(
+  ctx: Context,
+  messageId: number,
+  markdown: string,
+  options: TelegramSendOptions = {},
+): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (chatId === undefined) {
+    throw new Error("Cannot edit Telegram rich message without a chat id.");
+  }
+
+  const raw = (ctx.api as TelegramRawApi).raw;
+  if (!raw?.editMessageText) {
+    throw new Error("Telegram API client does not support editMessageText.rich_message.");
+  }
+
+  await raw.editMessageText({
+    chat_id: chatId,
+    message_id: messageId,
+    rich_message: { markdown },
+    ...toTelegramMethodOptions(options),
+  });
+}
+
+async function editTelegramInlineRichMessage(ctx: Context, inlineMessageId: string, markdown: string): Promise<void> {
+  const raw = (ctx.api as TelegramRawApi).raw;
+  if (!raw?.editMessageText) {
+    throw new Error("Telegram API client does not support editMessageText.rich_message.");
+  }
+
+  await raw.editMessageText({
+    inline_message_id: inlineMessageId,
+    rich_message: { markdown },
+  });
+}
+
+async function sendTelegramRichMessageDraft(
+  ctx: Context,
+  chatId: number,
+  draftId: number,
+  markdown: string,
+): Promise<void> {
+  const raw = (ctx.api as TelegramRawApi).raw;
+  if (!raw?.sendRichMessageDraft) {
+    throw new Error("Telegram API client does not support sendRichMessageDraft.");
+  }
+
+  await raw.sendRichMessageDraft({
+    chat_id: chatId,
+    draft_id: draftId,
+    rich_message: { markdown },
+  });
+}
+
+function buildRichMarkdownChunks(text: string): string[] {
+  return chunkText(text.trim() || "Done.", RICH_MARKDOWN_LIMIT);
+}
+
+function buildRichMarkdown(text: string, options: { truncate?: boolean } = {}): RenderedRichMarkdown {
+  const source = text.trim() || "Done.";
+  const chunks = chunkText(source, RICH_MARKDOWN_LIMIT);
+
+  if (!options.truncate || chunks.length <= 1) {
+    return {
+      markdown: chunks[0] ?? "Done.",
+      chunkCount: chunks.length,
+    };
+  }
+
+  const suffix = "\n\n_Response truncated for Telegram guest mode._";
+  const truncatedChunks = chunkText(source, RICH_MARKDOWN_LIMIT - suffix.length);
+  return {
+    markdown: `${truncatedChunks[0] ?? "Done."}${suffix}`,
+    chunkCount: chunks.length,
+  };
+}
+
+function buildRichDescription(markdown: string): string {
+  return markdown
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/<[^>]+>/g, "")
+    .replace(/[`*_~|#>]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
+async function replyClassicRenderedResponse(
+  ctx: Context,
+  text: string,
+  options: {
+    replaceMessageId?: number;
+    businessConnectionId?: string;
+  } = {},
+): Promise<ReplyRenderResult> {
+  try {
+    const htmlChunks = renderTelegramMessageChunks(text, CLASSIC_HTML_LIMIT);
     if (htmlChunks.length === 0) {
       throw new Error("Rendered Telegram HTML was empty.");
     }
@@ -786,13 +973,19 @@ async function replyRenderedResponse(
 
     return { mode: "html", chunkCount: htmlChunks.length };
   } catch (error) {
-    if (!isTelegramParseError(error)) {
+    if (getTelegramRetryAfterMs(error) !== undefined) {
+      throw error;
+    }
+    if (error instanceof GrammyError && !isTelegramParseError(error)) {
+      throw error;
+    }
+    if (!(error instanceof Error) && !isTelegramParseError(error)) {
       throw error;
     }
 
     console.warn("Telegram HTML rendering failed, falling back to plain text:", error);
 
-    const plainChunks = chunkText(text, 4000);
+    const plainChunks = chunkText(text, CLASSIC_TEXT_LIMIT);
     if (plainChunks.length === 0) {
       throw new Error("Plain text reply was empty.");
     }
@@ -820,9 +1013,12 @@ async function replyRenderedResponse(
   }
 }
 
-function buildLiveProgressHtml(status: string, thinkingText: string): string {
+function buildLiveProgressMarkdown(status: string, thinkingText: string): string {
   const body = thinkingText.trim().length > 0 ? `${status}\n\n${thinkingText}` : status;
-  return `<blockquote expandable>${escapeTelegramHtml(body)}</blockquote>`;
+  return body
+    .split(/\r?\n/)
+    .map((line) => (line.trim() ? `> ${line}` : ">"))
+    .join("\n");
 }
 
 async function replaceTelegramMessage(
@@ -890,10 +1086,6 @@ function trimProgressThinking(text: string, maxLength = 3_200): string {
   return `...\n${normalized.slice(-maxLength)}`;
 }
 
-function escapeTelegramHtml(text: string): string {
-  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
-
 function chunkText(text: string, maxLength: number): string[] {
   if (text.length <= maxLength) return [text];
 
@@ -922,4 +1114,15 @@ function chunkText(text: string, maxLength: number): string[] {
 
 function isTelegramParseError(error: unknown): boolean {
   return error instanceof GrammyError && /parse entities|can't parse entities|message text is empty/i.test(error.description);
+}
+
+function isTelegramRichFallbackError(error: unknown): boolean {
+  if (getTelegramRetryAfterMs(error) !== undefined) return false;
+
+  if (error instanceof GrammyError) {
+    const errorCode = (error as GrammyError & { error_code?: unknown }).error_code;
+    return errorCode === 400 || /rich|parse|can't parse|message text is empty/i.test(error.description);
+  }
+
+  return error instanceof Error && /does not support .*rich|sendRichMessage|rich_message/i.test(error.message);
 }

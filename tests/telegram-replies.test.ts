@@ -10,8 +10,8 @@ import type { AppConfig, TelegramRunContext } from "../src/types";
 test("group reply sink reacts, types, and streams answer text through one edited message", async () => {
   const reactions: unknown[] = [];
   const chatActions: unknown[] = [];
-  const replies: string[] = [];
-  const edits: string[] = [];
+  const richMessages: unknown[] = [];
+  const richEdits: unknown[] = [];
   const ctx = {
     update: { update_id: 1 },
     chat: { id: -1001 },
@@ -20,13 +20,19 @@ test("group reply sink reacts, types, and streams answer text through one edited
         chatActions.push(action);
         return true;
       },
-      editMessageText: async (_chatId: number, _messageId: number, text: string) => {
-        edits.push(text);
-        return true;
+      raw: {
+        sendRichMessage: async (payload: unknown) => {
+          richMessages.push(payload);
+          return { message_id: 10 };
+        },
+        editMessageText: async (payload: unknown) => {
+          richEdits.push(payload);
+          return true;
+        },
       },
     },
     reply: async (text: string) => {
-      replies.push(text);
+      richMessages.push({ fallback: text });
       return { message_id: 10 };
     },
     react: async (reaction: unknown) => {
@@ -61,9 +67,85 @@ test("group reply sink reacts, types, and streams answer text through one edited
   await new Promise((resolve) => setTimeout(resolve, 550));
   expect(reactions).toEqual(["👍"]);
   expect(chatActions).toEqual(["typing"]);
-  expect(replies).toEqual(["partial answer"]);
-  expect(edits).toEqual(["partial answer continued"]);
+  expect(richMessages).toEqual([
+    {
+      chat_id: -1001,
+      rich_message: { markdown: "partial answer" },
+    },
+  ]);
+  expect(richEdits).toEqual([
+    {
+      chat_id: -1001,
+      message_id: 10,
+      rich_message: { markdown: "partial answer continued" },
+    },
+  ]);
   await sink.stop();
+});
+
+test("private reply sink streams rich message drafts and sends rich final replies", async () => {
+  const chatActions: unknown[] = [];
+  const drafts: unknown[] = [];
+  const richMessages: unknown[] = [];
+  const ctx = {
+    update: { update_id: 42 },
+    chat: { id: 1234 },
+    api: {
+      sendChatAction: async (_chatId: number, action: string) => {
+        chatActions.push(action);
+        return true;
+      },
+      raw: {
+        sendRichMessageDraft: async (payload: unknown) => {
+          drafts.push(payload);
+          return true;
+        },
+        sendRichMessage: async (payload: unknown) => {
+          richMessages.push(payload);
+          return { message_id: 20 };
+        },
+      },
+    },
+  };
+
+  const sink = createTelegramReplySink(
+    ctx as never,
+    {
+      surface: "private",
+      sessionKey: "private:1234",
+      chatId: 1234,
+      chatType: "private",
+      text: "check",
+      prompt: "check",
+    } as TelegramRunContext,
+    {
+      enableTelegramNativeStreaming: true,
+      telegramDraftIntervalMs: 10,
+      telegramTypingIntervalMs: 4000,
+    } as AppConfig,
+  );
+
+  await sink.start();
+  sink.handleProgress({ type: "answer", text: "**partial answer**" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const result = await sink.sendFinal("**final answer**");
+  await sink.stop();
+
+  expect(result).toEqual({ mode: "rich", chunkCount: 1 });
+  expect(chatActions).toEqual(["typing"]);
+  expect(drafts).toEqual([
+    {
+      chat_id: 1234,
+      draft_id: 42,
+      rich_message: { markdown: "**partial answer**" },
+    },
+  ]);
+  expect(richMessages).toEqual([
+    {
+      chat_id: 1234,
+      rich_message: { markdown: "**final answer**" },
+    },
+  ]);
 });
 
 test("guest reply sink answers guest query once and edits inline message", async () => {
@@ -75,9 +157,11 @@ test("guest reply sink answers guest query once and edits inline message", async
         answers.push({ guestQueryId, result });
         return { inline_message_id: "inline-1" };
       },
-      editMessageTextInline: async (inlineMessageId: string, text: string, options: unknown) => {
-        edits.push({ inlineMessageId, text, options });
-        return true;
+      raw: {
+        editMessageText: async (payload: unknown) => {
+          edits.push(payload);
+          return true;
+        },
       },
     },
   };
@@ -88,26 +172,21 @@ test("guest reply sink answers guest query once and edits inline message", async
   await sink.stop();
   const result = await sink.sendFinal("**final answer**");
 
-  expect(result).toEqual({ mode: "html", chunkCount: 1 });
+  expect(result).toEqual({ mode: "rich", chunkCount: 1 });
   expect(answers).toHaveLength(1);
   expect(answers[0]).toMatchObject({
     guestQueryId: "guest-query-1",
     result: {
       type: "article",
       input_message_content: {
-        message_text: "Thinking...",
-        parse_mode: "HTML",
+        rich_message: { markdown: "Thinking..." },
       },
     },
   });
   expect(edits).toEqual([
     {
-      inlineMessageId: "inline-1",
-      text: "<b>final answer</b>",
-      options: {
-        parse_mode: "HTML",
-        link_preview_options: { is_disabled: true },
-      },
+      inline_message_id: "inline-1",
+      rich_message: { markdown: "**final answer**" },
     },
   ]);
 });
@@ -118,23 +197,25 @@ test("guest reply sink retries rate-limited final inline edits without throwing"
   const ctx = {
     api: {
       answerGuestQuery: async () => ({ inline_message_id: "inline-1" }),
-      editMessageTextInline: async (inlineMessageId: string, text: string, options: unknown) => {
-        editAttempts += 1;
-        edits.push({ inlineMessageId, text, options });
-        if (editAttempts === 1) {
-          throw new GrammyError(
-            "Call to 'editMessageText' failed!",
-            {
-              ok: false,
-              error_code: 429,
-              description: "Too Many Requests: retry after 0",
-              parameters: { retry_after: 0 },
-            },
-            "editMessageText",
-            {},
-          );
-        }
-        return true;
+      raw: {
+        editMessageText: async (payload: unknown) => {
+          editAttempts += 1;
+          edits.push(payload);
+          if (editAttempts === 1) {
+            throw new GrammyError(
+              "Call to 'editMessageText' failed!",
+              {
+                ok: false,
+                error_code: 429,
+                description: "Too Many Requests: retry after 0",
+                parameters: { retry_after: 0 },
+              },
+              "editMessageText",
+              {},
+            );
+          }
+          return true;
+        },
       },
     },
   };
@@ -143,24 +224,16 @@ test("guest reply sink retries rate-limited final inline edits without throwing"
   await sink.start();
   await sink.stop();
 
-  await expect(sink.sendFinal("final answer")).resolves.toEqual({ mode: "html", chunkCount: 1 });
+  await expect(sink.sendFinal("final answer")).resolves.toEqual({ mode: "rich", chunkCount: 1 });
   expect(editAttempts).toBe(2);
   expect(edits).toEqual([
     {
-      inlineMessageId: "inline-1",
-      text: "final answer",
-      options: {
-        parse_mode: "HTML",
-        link_preview_options: { is_disabled: true },
-      },
+      inline_message_id: "inline-1",
+      rich_message: { markdown: "final answer" },
     },
     {
-      inlineMessageId: "inline-1",
-      text: "final answer",
-      options: {
-        parse_mode: "HTML",
-        link_preview_options: { is_disabled: true },
-      },
+      inline_message_id: "inline-1",
+      rich_message: { markdown: "final answer" },
     },
   ]);
 });

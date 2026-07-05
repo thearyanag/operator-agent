@@ -143,6 +143,12 @@ Guest callers use the same access boundary as private DMs: if no `ALLOWED_USER_I
 
 Telegram must report `supports_guest_queries` for the bot. If it does not, Operator logs a startup warning and continues running.
 
+## Telegram Rich Messages
+
+Operator sends Telegram replies as Bot API 10.1 Rich Messages by default. Final replies use `sendRichMessage` or `editMessageText.rich_message`, private DM streaming uses `sendRichMessageDraft`, and guest replies use `answerGuestQuery` with `InputRichMessageContent` followed by rich inline edits.
+
+If Telegram rejects a rich payload because the API/client does not support the new shape or the rich formatting is invalid, Operator falls back to the previous classic HTML renderer and then plain text.
+
 ## Telegram Business Automation
 
 Telegram Business / Chat Automation is enabled by default and powers Personal Operator mode.

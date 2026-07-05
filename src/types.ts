@@ -25,7 +25,7 @@ export type TelegramUserLike = {
 };
 
 export type ReplyRenderResult = {
-  mode: "html" | "plain";
+  mode: "rich" | "html" | "plain";
   chunkCount: number;
 };
 
