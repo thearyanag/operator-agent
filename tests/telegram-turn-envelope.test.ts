@@ -67,3 +67,27 @@ test("extracts guest Telegram message caller identity", () => {
     expect(result.envelope.guestCallerSource).toBe("guest_bot_caller_user");
   }
 });
+
+test("extracts guest Telegram message from raw update payload", () => {
+  const ctx = {
+    update: {
+      update_id: 1,
+      guest_message: {
+        message_id: 10,
+        guest_query_id: "guest-query-1",
+        chat: { id: -1001, type: "supergroup", title: "Ops" },
+        text: "@operator help",
+        guest_bot_caller_user: { id: 456, first_name: "Ada", username: "ada" },
+      },
+    },
+  };
+
+  const result = extractGuestMessageTurnEnvelope(ctx as never);
+
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.envelope.mode).toBe("guest");
+    expect(result.envelope.guestQueryId).toBe("guest-query-1");
+    expect(result.envelope.senderTelegramId).toBe(456);
+  }
+});

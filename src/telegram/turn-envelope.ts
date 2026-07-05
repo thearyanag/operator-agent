@@ -11,6 +11,9 @@ export type TelegramGuestMessage = Message & {
 
 export type TelegramGuestContext = Context & {
   guestMessage?: TelegramGuestMessage;
+  update: Context["update"] & {
+    guest_message?: TelegramGuestMessage;
+  };
 };
 
 export type TelegramMessageTurnEnvelope = {
@@ -36,7 +39,8 @@ export type TelegramEnvelopeExtractionResult<TEnvelope extends TelegramTurnEnvel
   | { ok: false; reason: string; details?: Record<string, unknown> };
 
 export function getTelegramGuestMessage(ctx: Context): TelegramGuestMessage | undefined {
-  return (ctx as TelegramGuestContext).guestMessage;
+  const guestContext = ctx as TelegramGuestContext;
+  return guestContext.guestMessage ?? guestContext.update.guest_message;
 }
 
 export function extractStandardMessageTurnEnvelope(
