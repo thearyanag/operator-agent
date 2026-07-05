@@ -26,6 +26,15 @@ export interface TelegramReplySink {
   sendError(text: string): Promise<void>;
 }
 
+export class TelegramGuestAttachmentUnsupportedError extends Error {
+  constructor(readonly attachmentCount: number) {
+    super(
+      `Telegram guest mode cannot upload ${attachmentCount === 1 ? "this attachment" : `${attachmentCount} attachments`}. Use a DM or add the bot to the chat to receive local media files.`,
+    );
+    this.name = "TelegramGuestAttachmentUnsupportedError";
+  }
+}
+
 export function createTelegramReplySink(
   ctx: Context,
   runContext: TelegramRunContext,
@@ -48,6 +57,14 @@ export function createTelegramReplySink(
 
 export function createTelegramGuestReplySink(ctx: Context, guestQueryId: string): TelegramReplySink {
   return new GuestInlineReplySink(ctx, guestQueryId);
+}
+
+export function formatTelegramDeliveryError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return "Telegram delivery failed with an unknown error.";
 }
 
 export class EditableProgressReplySink implements TelegramReplySink {
@@ -320,7 +337,12 @@ export class GuestInlineReplySink implements TelegramReplySink {
     return this.deliver(text);
   }
 
-  async sendAttachments(_attachments: TelegramQueuedAttachment[]): Promise<void> {}
+  async sendAttachments(attachments: TelegramQueuedAttachment[]): Promise<void> {
+    if (attachments.length === 0) return;
+
+    await this.deliver(buildGuestAttachmentUnsupportedMessage(this.lastDeliveredText, attachments));
+    throw new TelegramGuestAttachmentUnsupportedError(attachments.length);
+  }
 
   async sendError(text: string): Promise<void> {
     await this.deliver(text);
@@ -751,6 +773,29 @@ function buildGuestPlainMessageText(text: string): string {
   const chunks = chunkText(text.trim() || "Done.", CLASSIC_TEXT_LIMIT);
   if (chunks.length <= 1) return chunks[0] ?? "Done.";
   return `${chunks[0]}\n\n[Response truncated for Telegram guest mode.]`;
+}
+
+function buildGuestAttachmentUnsupportedMessage(
+  deliveredText: string,
+  attachments: TelegramQueuedAttachment[],
+): string {
+  const baseText = deliveredText.trim() || "Done.";
+  const preview = attachments
+    .slice(0, 5)
+    .map((attachment) => `- ${attachment.fileName} (${attachment.kind})`)
+    .join("\n");
+  const remaining = attachments.length > 5 ? `\n- ...and ${attachments.length - 5} more` : "";
+
+  return [
+    baseText,
+    "",
+    "---",
+    "",
+    "**Media not delivered in guest mode.**",
+    "Telegram guest replies cannot upload local files. Use a DM or add the bot to this chat to receive generated media.",
+    "",
+    preview + remaining,
+  ].join("\n");
 }
 
 function delay(ms: number): Promise<void> {

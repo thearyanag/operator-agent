@@ -4,6 +4,7 @@ import {
   createTelegramGuestReplySink,
   createTelegramReplySink,
   GroupStreamingReplySink,
+  TelegramGuestAttachmentUnsupportedError,
 } from "../src/telegram/replies";
 import type { AppConfig, TelegramRunContext } from "../src/types";
 
@@ -234,6 +235,49 @@ test("guest reply sink retries rate-limited final inline edits without throwing"
     {
       inline_message_id: "inline-1",
       rich_message: { markdown: "final answer" },
+    },
+  ]);
+});
+
+test("guest reply sink marks queued attachments unsupported instead of silently succeeding", async () => {
+  const edits: unknown[] = [];
+  const ctx = {
+    api: {
+      answerGuestQuery: async () => ({ inline_message_id: "inline-1" }),
+      raw: {
+        editMessageText: async (payload: unknown) => {
+          edits.push(payload);
+          return true;
+        },
+      },
+    },
+  };
+
+  const sink = createTelegramGuestReplySink(ctx as never, "guest-query-1");
+  await sink.start();
+  await sink.sendFinal("final answer");
+
+  await expect(
+    sink.sendAttachments([
+      {
+        path: "/tmp/chart.png",
+        fileName: "chart.png",
+        kind: "photo",
+      },
+    ]),
+  ).rejects.toBeInstanceOf(TelegramGuestAttachmentUnsupportedError);
+
+  expect(edits).toEqual([
+    {
+      inline_message_id: "inline-1",
+      rich_message: { markdown: "final answer" },
+    },
+    {
+      inline_message_id: "inline-1",
+      rich_message: {
+        markdown:
+          "final answer\n\n---\n\n**Media not delivered in guest mode.**\nTelegram guest replies cannot upload local files. Use a DM or add the bot to this chat to receive generated media.\n\n- chart.png (photo)",
+      },
     },
   ]);
 });

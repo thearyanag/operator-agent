@@ -143,6 +143,8 @@ Guest callers use the same access boundary as private DMs: if no `ALLOWED_USER_I
 
 Telegram must report `supports_guest_queries` for the bot. If it does not, Operator logs a startup warning and continues running.
 
+Guest replies can render Rich Markdown media blocks only when the media is available at an HTTP/HTTPS URL. Local files queued with `telegram_queue_attachment` cannot be uploaded through guest mode; Operator marks those artifacts failed and edits the guest reply with a note telling the caller to use a DM or add the bot to the chat.
+
 ## Telegram Rich Messages
 
 Operator sends Telegram replies as Bot API 10.1 Rich Messages by default. Final replies use `sendRichMessage` or `editMessageText.rich_message`, private DM streaming uses `sendRichMessageDraft`, and guest replies use `answerGuestQuery` with `InputRichMessageContent` followed by rich inline edits.

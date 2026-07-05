@@ -52,6 +52,8 @@ import {
   createTelegramGuestReplySink,
   createTelegramReplySink,
   formatPiError,
+  formatTelegramDeliveryError,
+  TelegramGuestAttachmentUnsupportedError,
   type TelegramReplySink,
 } from "./replies";
 import { TelegramTurnHarness } from "./turn-harness";
@@ -802,7 +804,9 @@ async function processTelegramRun(
       attachmentSendError = error;
       deps.stateDb.markRunArtifactsFailed(runId, serializeError(error));
       console.error("Failed to send Telegram attachment:", error);
-      await sink.sendError(`Failed to send attachment: ${formatPiError(error)}`);
+      if (!(error instanceof TelegramGuestAttachmentUnsupportedError)) {
+        await sink.sendError(`Failed to send attachment: ${formatTelegramDeliveryError(error)}`);
+      }
     }
 
     await deps.auditLogger.log({
