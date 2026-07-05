@@ -12,6 +12,8 @@ import { sendQueuedTelegramAttachments } from "./attachments";
 import { toTelegramMethodOptions } from "./api-options";
 
 const GROUP_STREAM_INTERVAL_MS = 500;
+const GUEST_STREAM_INTERVAL_MS = 2_000;
+const GUEST_RENDER_LIMIT = 3_500;
 
 export interface TelegramReplySink {
   start(): Promise<void>;
@@ -227,6 +229,12 @@ type TelegramGuestInlineResult = {
   };
 };
 
+type GuestRenderedMessage = {
+  text: string;
+  parseMode?: "HTML";
+  chunkCount: number;
+};
+
 type TelegramSentGuestMessage = {
   inline_message_id?: string;
 };
@@ -247,6 +255,10 @@ export class GuestInlineReplySink implements TelegramReplySink {
   private answerChain: Promise<void> | undefined;
   private editChain = Promise.resolve();
   private lastDeliveredText = "";
+  private pendingEditText = "";
+  private editTimer: ReturnType<typeof setTimeout> | undefined;
+  private retryUntil = 0;
+  private stopped = false;
 
   constructor(
     private readonly ctx: Context,
@@ -261,10 +273,13 @@ export class GuestInlineReplySink implements TelegramReplySink {
 
   handleProgress(update: PiProgressUpdate): void {
     if (update.type !== "answer") return;
-    void this.editIfPossible(update.text);
+    this.pendingEditText = update.text;
+    this.scheduleEdit();
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
+    this.clearEditTimer();
     await this.answerChain?.catch(() => undefined);
     await this.editChain.catch(() => undefined);
   }
@@ -280,14 +295,16 @@ export class GuestInlineReplySink implements TelegramReplySink {
   }
 
   private async deliver(text: string): Promise<ReplyRenderResult> {
+    this.clearEditTimer();
+    this.pendingEditText = "";
     await this.answerChain?.catch(() => undefined);
     if (this.inlineMessageId) {
-      await this.editIfPossible(text);
-      return { mode: "plain", chunkCount: countGuestChunks(text) };
+      await this.editIfPossible(text, { force: true });
+      return buildGuestReplyResult(text);
     }
 
     await this.answerOnce(text);
-    return { mode: "plain", chunkCount: countGuestChunks(text) };
+    return buildGuestReplyResult(text);
   }
 
   private async answerOnce(text: string): Promise<void> {
@@ -297,10 +314,11 @@ export class GuestInlineReplySink implements TelegramReplySink {
       return;
     }
 
-    this.answerChain = this.callAnswerGuestQuery(buildGuestInlineResult(text))
+    const rendered = buildGuestRenderedMessage(text);
+    this.answerChain = this.callAnswerGuestQuery(buildGuestInlineResult(rendered))
       .then((sent) => {
         this.inlineMessageId = sent.inline_message_id;
-        this.lastDeliveredText = buildGuestMessageText(text);
+        this.lastDeliveredText = rendered.text;
       })
       .finally(() => {
         this.answerChain = undefined;
@@ -308,21 +326,88 @@ export class GuestInlineReplySink implements TelegramReplySink {
     await this.answerChain;
   }
 
-  private async editIfPossible(text: string): Promise<void> {
+  private scheduleEdit(): void {
+    if (this.stopped || this.editTimer || !this.inlineMessageId) return;
+
+    const delay = Math.max(GUEST_STREAM_INTERVAL_MS, this.retryUntil - Date.now());
+    this.editTimer = setTimeout(() => {
+      this.editTimer = undefined;
+      const text = this.pendingEditText;
+      this.pendingEditText = "";
+      if (!text) return;
+
+      void this.editIfPossible(text).catch((error) => {
+        console.warn("Failed to stream Telegram guest inline edit:", error);
+      });
+    }, delay);
+  }
+
+  private clearEditTimer(): void {
+    if (!this.editTimer) return;
+    clearTimeout(this.editTimer);
+    this.editTimer = undefined;
+  }
+
+  private async editIfPossible(text: string, options: { force?: boolean } = {}): Promise<void> {
     await this.answerChain?.catch(() => undefined);
     const inlineMessageId = this.inlineMessageId;
     if (!inlineMessageId) return;
 
-    const messageText = buildGuestMessageText(text);
-    if (!messageText || messageText === this.lastDeliveredText) return;
+    const rendered = buildGuestRenderedMessage(text);
+    if (!rendered.text || rendered.text === this.lastDeliveredText) return;
+
+    const waitMs = this.retryUntil - Date.now();
+    if (waitMs > 0) {
+      if (!options.force) {
+        this.pendingEditText = text;
+        this.scheduleEdit();
+        return;
+      }
+      await delay(waitMs);
+    }
 
     this.editChain = this.editChain
       .catch(() => undefined)
       .then(async () => {
-        await this.api.editMessageTextInline(inlineMessageId, messageText, {
-          link_preview_options: { is_disabled: true },
-        });
-        this.lastDeliveredText = messageText;
+        let waitedForRateLimit = false;
+
+        while (true) {
+          try {
+            await this.api.editMessageTextInline(inlineMessageId, rendered.text, {
+              ...(rendered.parseMode ? { parse_mode: rendered.parseMode } : {}),
+              link_preview_options: { is_disabled: true },
+            });
+            this.lastDeliveredText = rendered.text;
+            return;
+          } catch (error) {
+            const retryAfter = getTelegramRetryAfterMs(error);
+            if (retryAfter !== undefined) {
+              this.retryUntil = Date.now() + retryAfter;
+              this.pendingEditText = text;
+              console.warn(`Telegram guest inline edit rate-limited; retrying after ${Math.ceil(retryAfter / 1000)}s.`);
+
+              if (options.force && !waitedForRateLimit) {
+                waitedForRateLimit = true;
+                await delay(retryAfter);
+                continue;
+              }
+
+              this.scheduleEdit();
+              return;
+            }
+
+            if (rendered.parseMode && isTelegramParseError(error)) {
+              const fallback = buildGuestPlainMessageText(text);
+              await this.api.editMessageTextInline(inlineMessageId, fallback, {
+                link_preview_options: { is_disabled: true },
+              });
+              this.lastDeliveredText = fallback;
+              return;
+            }
+
+            throw error;
+          }
+        }
       });
     await this.editChain;
   }
@@ -572,28 +657,81 @@ function clipGroupStreamingText(text: string, maxLength = 3500): string {
   return `...\n${trimmed.slice(-(maxLength - 4))}`;
 }
 
-function buildGuestInlineResult(text: string): TelegramGuestInlineResult {
-  const messageText = buildGuestMessageText(text);
+function buildGuestInlineResult(message: GuestRenderedMessage): TelegramGuestInlineResult {
   return {
     type: "article",
     id: "operator-response",
     title: "Operator",
-    description: messageText.slice(0, 120),
+    description: stripTelegramHtml(message.text).slice(0, 120),
     input_message_content: {
-      message_text: messageText,
+      message_text: message.text,
+      ...(message.parseMode ? { parse_mode: message.parseMode } : {}),
       link_preview_options: { is_disabled: true },
     },
   };
 }
 
-function buildGuestMessageText(text: string): string {
-  const chunks = chunkText(text.trim() || "Done.", 3900);
+function buildGuestRenderedMessage(text: string): GuestRenderedMessage {
+  const sourceText = buildGuestPlainMessageText(text);
+  try {
+    const htmlChunks = renderTelegramMessageChunks(sourceText, GUEST_RENDER_LIMIT);
+    if (htmlChunks.length > 0) {
+      return {
+        text: htmlChunks[0]!,
+        parseMode: "HTML",
+        chunkCount: htmlChunks.length,
+      };
+    }
+  } catch (error) {
+    console.warn("Telegram guest HTML rendering failed, falling back to plain text:", error);
+  }
+
+  return {
+    text: sourceText,
+    chunkCount: countGuestChunks(text),
+  };
+}
+
+function buildGuestReplyResult(text: string): ReplyRenderResult {
+  const rendered = buildGuestRenderedMessage(text);
+  return {
+    mode: rendered.parseMode ? "html" : "plain",
+    chunkCount: rendered.chunkCount,
+  };
+}
+
+function buildGuestPlainMessageText(text: string): string {
+  const chunks = chunkText(text.trim() || "Done.", GUEST_RENDER_LIMIT);
   if (chunks.length <= 1) return chunks[0] ?? "Done.";
   return `${chunks[0]}\n\n[Response truncated for Telegram guest mode.]`;
 }
 
 function countGuestChunks(text: string): number {
-  return chunkText(text.trim() || "Done.", 3900).length;
+  return chunkText(text.trim() || "Done.", GUEST_RENDER_LIMIT).length;
+}
+
+function stripTelegramHtml(text: string): string {
+  return text
+    .replace(/<[^>]+>/g, "")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getTelegramRetryAfterMs(error: unknown): number | undefined {
+  if (!(error instanceof GrammyError)) return undefined;
+  const typedError = error as GrammyError & {
+    parameters?: { retry_after?: unknown };
+    error?: { parameters?: { retry_after?: unknown } };
+  };
+  const retryAfter = typedError.parameters?.retry_after ?? typedError.error?.parameters?.retry_after;
+  return typeof retryAfter === "number" && Number.isFinite(retryAfter)
+    ? Math.max(0, retryAfter * 1000)
+    : undefined;
 }
 
 async function sendPlainTelegramMessage(
