@@ -19,6 +19,7 @@ RUN cp .mcp.json.example .mcp.json \
   && rm -rf /root/.npm
 
 ENV NODE_ENV=production
+ENV PORT=8080
 ENV HOME=/data/home
 ENV PI_WORKDIR=/app
 ENV PI_SESSION_DIR=/data/pi-sessions
