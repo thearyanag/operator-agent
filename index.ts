@@ -10,15 +10,21 @@ import { OperatorStateDb } from "./src/state/operator-db";
 import { registerTelegramHandlers } from "./src/telegram/handlers";
 
 const stateDb = new OperatorStateDb(config.operatorStateDbPath);
-const operatorStore = await createOperatorStore();
+let operatorStore: OperatorStore | undefined;
+startHealthServer(() => operatorStore);
+
+console.log("Initializing Operator store");
+operatorStore = await createOperatorStore();
 const auditLogger = new AuditLogger(stateDb, operatorStore);
 
 try {
+  console.log("Prewarming MCP direct tool cache");
   await prewarmMcpDirectToolCache(config);
 } catch (error) {
   console.warn(`MCP cache prewarm failed before pi startup: ${error instanceof Error ? error.message : String(error)}`);
 }
 
+console.log("Initializing pi bridge");
 const piBridge = await createPiBridge(config, {
   onEmptyResponse: async ({ sessionKey, prompt, newMessages, recentMessages, totalMessages, startMessageCount }) => {
     await auditLogger.log({
@@ -54,7 +60,6 @@ registerTelegramHandlers(bot, {
 
 logStartupConfig(config);
 await verifyTelegramGuestModeSupport(bot);
-startHealthServer(operatorStore);
 
 bot.start({
   drop_pending_updates: true,
@@ -67,7 +72,7 @@ async function createOperatorStore(): Promise<OperatorStore | undefined> {
   return createPostgresOperatorStore(config.operatorDatabaseUrl, config.operatorOwnerId);
 }
 
-function startHealthServer(operatorStore?: OperatorStore): void {
+function startHealthServer(getOperatorStore: () => OperatorStore | undefined): void {
   const portValue = Bun.env.PORT?.trim();
   if (!portValue) return;
 
@@ -83,7 +88,7 @@ function startHealthServer(operatorStore?: OperatorStore): void {
       const { pathname } = new URL(request.url);
       const controlPanelResponse = await handleControlPanelRequest(request, {
         appConfig: config,
-        operatorStore,
+        operatorStore: getOperatorStore(),
       });
       if (controlPanelResponse) return controlPanelResponse;
 
