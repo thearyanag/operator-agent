@@ -143,7 +143,7 @@ Guest callers use the same access boundary as private DMs: if no `ALLOWED_USER_I
 
 Telegram must report `supports_guest_queries` for the bot. If it does not, Operator logs a startup warning and continues running.
 
-Guest replies can render Rich Markdown media blocks only when the media is available at an HTTP/HTTPS URL. Local files queued with `telegram_queue_attachment` cannot be uploaded through guest mode; Operator marks those artifacts failed and edits the guest reply with a note telling the caller to use a DM or add the bot to the chat.
+Guest replies can render queued photos, videos, animations, audio, voice notes, and video notes inline when `OPERATOR_PUBLIC_URL` is configured. Operator copies each approved local attachment into its own temporary media spool, exposes it through an opaque URL on the existing HTTP server, and deletes it after 10 minutes. No external object-storage service is required. Documents and stickers still fall back to a note telling the caller to use a DM or add the bot to the chat.
 
 ## Telegram Rich Messages
 

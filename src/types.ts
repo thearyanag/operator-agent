@@ -192,6 +192,8 @@ export type AppConfig = {
   operatorStateDbPath: string;
   operatorContextDir: string;
   operatorControlPanelToken?: string;
+  operatorPublicUrl?: string;
+  operatorGuestMediaDir: string;
   telegramTypingIntervalMs: number;
   telegramMaxDocumentBytes: number;
   telegramDraftIntervalMs: number;

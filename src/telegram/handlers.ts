@@ -48,6 +48,7 @@ import {
   getAuditContextForRun,
   getBusinessAuditContext,
 } from "./context";
+import type { TelegramGuestMediaPublisher } from "./guest-media";
 import {
   createTelegramGuestReplySink,
   createTelegramReplySink,
@@ -70,6 +71,7 @@ type TelegramHandlerDeps = {
   piBridge: PiBridge;
   stateDb: OperatorStateDb;
   operatorStore?: OperatorStore;
+  guestMediaStore?: TelegramGuestMediaPublisher;
 };
 
 export function registerTelegramHandlers(bot: Bot, deps: TelegramHandlerDeps): void {
@@ -281,7 +283,7 @@ async function handleGuestPromptTurn(
   const guestQueryId = envelope.guestQueryId;
   if (!guestQueryId) return;
 
-  const sink = createTelegramGuestReplySink(envelope.ctx, guestQueryId);
+  const sink = createTelegramGuestReplySink(envelope.ctx, guestQueryId, deps.guestMediaStore);
   const text = envelope.text;
   if (!text) {
     await sink.sendFinal("Send a text message or caption when summoning Operator.");

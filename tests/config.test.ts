@@ -25,6 +25,7 @@ test("defaults pi model to Anthropic Claude Sonnet 4.5", () => {
   expect(appConfig.piProviderMode).toBe("default");
   expect(appConfig.piModel).toBe("anthropic/claude-sonnet-4-5");
   expect(appConfig.operatorStateDbPath).toBe("/tmp/operator-agent/.operator/state/operator.sqlite");
+  expect(appConfig.operatorGuestMediaDir).toBe("/tmp/operator-agent/.operator/state/guest-media");
 });
 
 test("enables Telegram guest message updates by default", () => {
@@ -55,6 +56,7 @@ test("accepts Operator Postgres, owner, bot username, and control panel config",
       OPERATOR_OWNER_ID: "11111111-1111-4111-8111-111111111111",
       OPERATOR_OWNER_TELEGRAM_IDS: "123456789,987654321",
       OPERATOR_CONTROL_PANEL_TOKEN: "panel-token",
+      OPERATOR_PUBLIC_URL: "https://operator.example.com/",
       OPERATOR_CONTEXT_DIR: "/data/operator-context",
     },
     "/tmp/operator-agent",
@@ -65,7 +67,20 @@ test("accepts Operator Postgres, owner, bot username, and control panel config",
   expect(appConfig.operatorOwnerId).toBe("11111111-1111-4111-8111-111111111111");
   expect([...appConfig.operatorOwnerTelegramIds]).toEqual([123456789, 987654321]);
   expect(appConfig.operatorControlPanelToken).toBe("panel-token");
+  expect(appConfig.operatorPublicUrl).toBe("https://operator.example.com");
   expect(appConfig.operatorContextDir).toBe("/data/operator-context");
+});
+
+test("rejects an Operator public URL with a path", () => {
+  expect(() =>
+    loadConfig(
+      {
+        ...baseEnv,
+        OPERATOR_PUBLIC_URL: "https://operator.example.com/app",
+      },
+      "/tmp/operator-agent",
+    ),
+  ).toThrow(/OPERATOR_PUBLIC_URL/);
 });
 
 test("rejects invalid Operator owner IDs", () => {

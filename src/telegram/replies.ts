@@ -10,12 +10,18 @@ import type {
 } from "../types";
 import { sendQueuedTelegramAttachments } from "./attachments";
 import { toTelegramMethodOptions } from "./api-options";
+import {
+  isTelegramGuestRichMediaAttachment,
+  type PublishedTelegramGuestMedia,
+  type TelegramGuestMediaPublisher,
+} from "./guest-media";
 
 const GROUP_STREAM_INTERVAL_MS = 500;
 const GUEST_STREAM_INTERVAL_MS = 2_000;
 const RICH_MARKDOWN_LIMIT = 32_000;
 const CLASSIC_HTML_LIMIT = 3_500;
 const CLASSIC_TEXT_LIMIT = 4_000;
+const GUEST_RICH_MEDIA_LIMIT = 50;
 
 export interface TelegramReplySink {
   start(): Promise<void>;
@@ -55,8 +61,12 @@ export function createTelegramReplySink(
   return new EditableProgressReplySink(ctx, appConfig);
 }
 
-export function createTelegramGuestReplySink(ctx: Context, guestQueryId: string): TelegramReplySink {
-  return new GuestInlineReplySink(ctx, guestQueryId);
+export function createTelegramGuestReplySink(
+  ctx: Context,
+  guestQueryId: string,
+  mediaPublisher?: TelegramGuestMediaPublisher,
+): TelegramReplySink {
+  return new GuestInlineReplySink(ctx, guestQueryId, mediaPublisher);
 }
 
 export function formatTelegramDeliveryError(error: unknown): string {
@@ -312,6 +322,7 @@ export class GuestInlineReplySink implements TelegramReplySink {
   constructor(
     private readonly ctx: Context,
     private readonly guestQueryId: string,
+    private readonly mediaPublisher?: TelegramGuestMediaPublisher,
   ) {
     this.api = ctx.api as TelegramRawApi;
   }
@@ -340,8 +351,17 @@ export class GuestInlineReplySink implements TelegramReplySink {
   async sendAttachments(attachments: TelegramQueuedAttachment[]): Promise<void> {
     if (attachments.length === 0) return;
 
-    await this.deliver(buildGuestAttachmentUnsupportedMessage(this.lastDeliveredText, attachments));
-    throw new TelegramGuestAttachmentUnsupportedError(attachments.length);
+    if (
+      !this.mediaPublisher?.enabled
+      || attachments.length > GUEST_RICH_MEDIA_LIMIT
+      || attachments.some((attachment) => !isTelegramGuestRichMediaAttachment(attachment))
+    ) {
+      await this.deliver(buildGuestAttachmentUnsupportedMessage(this.lastDeliveredText, attachments));
+      throw new TelegramGuestAttachmentUnsupportedError(attachments.length);
+    }
+
+    const published = await Promise.all(attachments.map((attachment) => this.mediaPublisher!.publish(attachment)));
+    await this.deliver(buildGuestMediaMessage(this.lastDeliveredText, attachments, published));
   }
 
   async sendError(text: string): Promise<void> {
@@ -796,6 +816,42 @@ function buildGuestAttachmentUnsupportedMessage(
     "",
     preview + remaining,
   ].join("\n");
+}
+
+function buildGuestMediaMessage(
+  deliveredText: string,
+  attachments: TelegramQueuedAttachment[],
+  published: PublishedTelegramGuestMedia[],
+): string {
+  const mediaMarkdown = attachments
+    .map((attachment, index) => {
+      const caption = escapeGuestMediaCaption(attachment.caption || attachment.fileName);
+      return `![](${published[index]!.url} "${caption}")`;
+    })
+    .join("\n\n");
+  const separator = "\n\n";
+  const baseText = deliveredText.trim() || "Done.";
+  const availableBaseLength = RICH_MARKDOWN_LIMIT - separator.length - mediaMarkdown.length;
+
+  if (availableBaseLength <= 0) {
+    throw new Error("Telegram guest media URLs exceed the Rich Message size limit.");
+  }
+  if (baseText.length <= availableBaseLength) {
+    return `${baseText}${separator}${mediaMarkdown}`;
+  }
+
+  const suffix = "\n\n_Response truncated for Telegram guest media._";
+  const baseLimit = Math.max(1, availableBaseLength - suffix.length);
+  const clippedBase = chunkText(baseText, baseLimit)[0] ?? "Done.";
+  return `${clippedBase}${suffix}${separator}${mediaMarkdown}`;
+}
+
+function escapeGuestMediaCaption(caption: string): string {
+  return caption
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function delay(ms: number): Promise<void> {

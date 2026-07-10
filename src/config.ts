@@ -1,4 +1,4 @@
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { AppConfig, OpenAICodexAuthConfig, PiProviderMode, ThinkingLevel } from "./types";
 
 const TELEGRAM_TYPING_INTERVAL_MS = 4_000;
@@ -17,6 +17,7 @@ export function loadConfig(env: Record<string, string | undefined> = Bun.env, cw
     env.PI_SYSTEM_PROMPT_PATH?.trim() || join("prompts", "system-prompt.md"),
     piWorkdir,
   );
+  const operatorStateDbPath = env.OPERATOR_STATE_DB_PATH?.trim() || join(cwd, ".operator", "state", "operator.sqlite");
 
   return {
     telegramBotToken: requireEnv(env, "TELEGRAM_BOT_TOKEN"),
@@ -52,12 +53,14 @@ export function loadConfig(env: Record<string, string | undefined> = Bun.env, cw
     operatorDatabaseUrl: parseOptionalString(env.OPERATOR_DATABASE_URL),
     operatorOwnerId: parseOptionalUuid(env.OPERATOR_OWNER_ID, "OPERATOR_OWNER_ID") || DEFAULT_OPERATOR_OWNER_ID,
     operatorOwnerTelegramIds: parseTelegramIdSet(env.OPERATOR_OWNER_TELEGRAM_IDS, "OPERATOR_OWNER_TELEGRAM_IDS"),
-    operatorStateDbPath: env.OPERATOR_STATE_DB_PATH?.trim() || join(cwd, ".operator", "state", "operator.sqlite"),
+    operatorStateDbPath,
     operatorContextDir: resolveOperatorPath(
       env.OPERATOR_CONTEXT_DIR?.trim() || join(".operator", "context"),
       cwd,
     ),
     operatorControlPanelToken: parseOptionalString(env.OPERATOR_CONTROL_PANEL_TOKEN),
+    operatorPublicUrl: parseOptionalPublicUrl(env.OPERATOR_PUBLIC_URL),
+    operatorGuestMediaDir: join(dirname(operatorStateDbPath), "guest-media"),
     telegramTypingIntervalMs: TELEGRAM_TYPING_INTERVAL_MS,
     telegramMaxDocumentBytes: TELEGRAM_MAX_DOCUMENT_BYTES,
     telegramDraftIntervalMs: TELEGRAM_DRAFT_INTERVAL_MS,
@@ -89,6 +92,8 @@ export function logStartupConfig(appConfig: AppConfig): void {
   console.log(`Operator context dir: ${appConfig.operatorContextDir}`);
   console.log(`Telegram bot username: ${appConfig.telegramBotUsername ?? "not configured"}`);
   console.log(`Operator control panel token: ${appConfig.operatorControlPanelToken ? "configured" : "not configured"}`);
+  console.log(`Operator public URL: ${appConfig.operatorPublicUrl ?? "not configured"}`);
+  console.log(`Telegram guest media dir: ${appConfig.operatorGuestMediaDir}`);
   console.log(`Telegram native streaming: ${appConfig.enableTelegramNativeStreaming ? "enabled" : "disabled"}`);
   console.log(`Telegram Business automation: ${appConfig.enableTelegramBusinessAutomation ? "enabled" : "disabled"}`);
 
@@ -140,6 +145,27 @@ function requireEnv(env: Record<string, string | undefined>, name: string): stri
 function parseOptionalString(rawValue: string | undefined): string | undefined {
   const value = rawValue?.trim();
   return value ? value : undefined;
+}
+
+function parseOptionalPublicUrl(rawValue: string | undefined): string | undefined {
+  const value = parseOptionalString(rawValue);
+  if (!value) return undefined;
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`Invalid OPERATOR_PUBLIC_URL: ${rawValue}`);
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`Invalid OPERATOR_PUBLIC_URL protocol: ${url.protocol}`);
+  }
+  if (url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) {
+    throw new Error("OPERATOR_PUBLIC_URL must contain only the public origin, for example https://operator.example.com");
+  }
+
+  return url.origin;
 }
 
 function parseOptionalUuid(rawValue: string | undefined, envName: string): string | undefined {

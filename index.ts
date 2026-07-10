@@ -7,11 +7,24 @@ import type { OperatorStore } from "./src/operator/store";
 import { createPiBridge } from "./src/pi/bridge";
 import { prewarmMcpDirectToolCache } from "./src/pi/mcp-prewarm";
 import { OperatorStateDb } from "./src/state/operator-db";
+import { TelegramGuestMediaStore } from "./src/telegram/guest-media";
 import { registerTelegramHandlers } from "./src/telegram/handlers";
 
 const stateDb = new OperatorStateDb(config.operatorStateDbPath);
+const guestMediaStore = new TelegramGuestMediaStore({
+  publicUrl: config.operatorPublicUrl,
+  spoolDir: config.operatorGuestMediaDir,
+  attachmentValidation: {
+    workdir: config.piWorkdir,
+    allowedRoots: config.telegramAttachmentRoots,
+    maxDocumentBytes: config.telegramMaxDocumentBytes,
+  },
+});
 let operatorStore: OperatorStore | undefined;
-startHealthServer(() => operatorStore);
+startHealthServer(() => operatorStore, guestMediaStore);
+void guestMediaStore.pruneExpired().catch((error) => {
+  console.warn(`Failed to prune expired Telegram guest media: ${error instanceof Error ? error.message : String(error)}`);
+});
 
 console.log("Initializing Operator store");
 operatorStore = await createOperatorStore();
@@ -56,6 +69,7 @@ registerTelegramHandlers(bot, {
   piBridge,
   stateDb,
   operatorStore,
+  guestMediaStore,
 });
 
 logStartupConfig(config);
@@ -72,9 +86,17 @@ async function createOperatorStore(): Promise<OperatorStore | undefined> {
   return createPostgresOperatorStore(config.operatorDatabaseUrl, config.operatorOwnerId);
 }
 
-function startHealthServer(getOperatorStore: () => OperatorStore | undefined): void {
+function startHealthServer(
+  getOperatorStore: () => OperatorStore | undefined,
+  mediaStore: TelegramGuestMediaStore,
+): void {
   const portValue = Bun.env.PORT?.trim();
-  if (!portValue) return;
+  if (!portValue) {
+    if (mediaStore.enabled) {
+      console.warn("OPERATOR_PUBLIC_URL is configured, but PORT is not set; Telegram guest media URLs will not be served.");
+    }
+    return;
+  }
 
   const port = Number(portValue);
   if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
@@ -86,6 +108,9 @@ function startHealthServer(getOperatorStore: () => OperatorStore | undefined): v
     port,
     async fetch(request) {
       const { pathname } = new URL(request.url);
+      const guestMediaResponse = await mediaStore.handleRequest(request);
+      if (guestMediaResponse) return guestMediaResponse;
+
       const controlPanelResponse = await handleControlPanelRequest(request, {
         appConfig: config,
         operatorStore: getOperatorStore(),

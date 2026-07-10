@@ -281,3 +281,55 @@ test("guest reply sink marks queued attachments unsupported instead of silently 
     },
   ]);
 });
+
+test("guest reply sink embeds published photos and videos as Rich Markdown media blocks", async () => {
+  const edits: unknown[] = [];
+  const publishedFiles: string[] = [];
+  const ctx = {
+    api: {
+      answerGuestQuery: async () => ({ inline_message_id: "inline-1" }),
+      raw: {
+        editMessageText: async (payload: unknown) => {
+          edits.push(payload);
+          return true;
+        },
+      },
+    },
+  };
+  const publisher = {
+    enabled: true,
+    publish: async (attachment: { fileName: string }) => {
+      publishedFiles.push(attachment.fileName);
+      return {
+        url: `https://operator.example.com/guest-media/token/${attachment.fileName}`,
+        expiresAt: Date.now() + 600_000,
+      };
+    },
+  };
+
+  const sink = createTelegramGuestReplySink(ctx as never, "guest-query-1", publisher);
+  await sink.start();
+  await sink.sendFinal("final answer");
+  await sink.sendAttachments([
+    {
+      path: "/tmp/chart.png",
+      fileName: "chart.png",
+      caption: "Generated chart",
+      kind: "photo",
+    },
+    {
+      path: "/tmp/demo.mp4",
+      fileName: "demo.mp4",
+      kind: "video",
+    },
+  ]);
+
+  expect(publishedFiles).toEqual(["chart.png", "demo.mp4"]);
+  expect(edits.at(-1)).toEqual({
+    inline_message_id: "inline-1",
+    rich_message: {
+      markdown:
+        "final answer\n\n![](https://operator.example.com/guest-media/token/chart.png \"Generated chart\")\n\n![](https://operator.example.com/guest-media/token/demo.mp4 \"demo.mp4\")",
+    },
+  });
+});
