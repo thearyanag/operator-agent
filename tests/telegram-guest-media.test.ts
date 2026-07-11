@@ -41,6 +41,9 @@ test("publishes approved guest media through a ranged temporary URL", async () =
     const fullResponse = await store.handleRequest(new Request(published.url));
     expect(fullResponse?.status).toBe(200);
     expect(fullResponse?.headers.get("content-type")).toBe("image/png");
+    expect(fullResponse?.headers.get("cache-control")).toBe(
+      "public, max-age=600, s-maxage=600, immutable",
+    );
     expect(await fullResponse?.text()).toBe("0123456789");
 
     const rangeResponse = await store.handleRequest(new Request(published.url, {

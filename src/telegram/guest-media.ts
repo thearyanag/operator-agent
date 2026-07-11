@@ -125,9 +125,10 @@ export class TelegramGuestMediaStore implements TelegramGuestMediaPublisher {
     }
 
     const file = Bun.file(mediaPath);
+    const cacheTtlSeconds = Math.floor(this.ttlMs / 1_000);
     const headers = new Headers({
       "accept-ranges": "bytes",
-      "cache-control": `private, max-age=${Math.floor(this.ttlMs / 1_000)}`,
+      "cache-control": `public, max-age=${cacheTtlSeconds}, s-maxage=${cacheTtlSeconds}, immutable`,
       "content-disposition": buildInlineContentDisposition(route.fileName),
       "content-type": file.type || "application/octet-stream",
       "x-content-type-options": "nosniff",
